@@ -1,16 +1,31 @@
 # claude-rescue
 
-A Claude Code subagent that delegates tasks to an **independent `claude` CLI subprocess** with a user-chosen Anthropic-compatible backend — swap model, key, or endpoint per task without touching your main-thread subscription.
+> **One Claude Code conversation. Many models — official and not.**
 
-## Why
+Talk to Claude Code as usual. Within the same session, let it dispatch subtasks to DeepSeek, GLM, Qwen, Kimi, MiniMax, or any Anthropic-compatible backend — each call isolated in its own subprocess with its own key, endpoint, and model. Your main thread stays on your Pro/Max subscription and keeps full context; the heavy lifting goes elsewhere.
 
-Claude Code's built-in subagents share the parent's authentication and are locked to official Anthropic models. `claude-rescue` breaks that:
+```
+┌─────────────────────────────────────────────────────────────┐
+│  You ⇄ Claude Code (Opus/Sonnet, your subscription)         │
+│          │                                                  │
+│          ├─ Agent: claude-rescue ──▶ claude -p ⇢ GLM-5      │
+│          ├─ Agent: claude-rescue ──▶ claude -p ⇢ DeepSeek   │
+│          └─ Agent: claude-rescue ──▶ claude -p ⇢ Qwen3.6    │
+└─────────────────────────────────────────────────────────────┘
+```
 
-- **Save subscription quota** — run long jobs on pay-as-you-go or a third-party provider while your main thread keeps its Pro/Max plan warm.
-- **Pick the right model per task** — GLM-5 for long-context, DeepSeek-v4-pro for deep reasoning, Qwen3.6-Plus for vision, Sonnet for polish.
-- **Isolation** — each dispatch is a fresh `claude` process with its own env, own CWD, own job dir.
+## What it solves
 
-Architecturally mirrors the `codex-rescue` / `opencode-rescue` pattern (thin forwarder agent + companion runtime), but the subprocess is `claude` itself talking to a different backend.
+**"Can I have a single Claude Code conversation where Claude Code can use multiple models, including non-official ones?"** — yes. That's the whole product.
+
+Built-in Claude Code subagents share the parent's auth and are locked to official Anthropic models. Proxy-style routers (`claude-code-router`, `cc-switch`) solve "switch the whole session to one alt backend" — useful, but different problem: your main thread is no longer native Claude once a proxy is in front. `claude-rescue` keeps the main thread untouched and gives you **per-dispatch** backend selection:
+
+- **Save subscription quota** — offload long jobs to pay-as-you-go or cheap third-party providers, main thread keeps its plan warm.
+- **Right model per task** — GLM-5 for long-context, DeepSeek-v4-pro for deep reasoning, Qwen3.6-Plus for vision, Sonnet for polish.
+- **Isolation** — each dispatch is a fresh `claude` subprocess with its own env, CWD, and job dir. Fail one, the others keep running.
+- **No proxy in front of your main thread.** You're still talking to real Claude.
+
+Architecturally mirrors the `codex-rescue` / `opencode-rescue` pattern (thin forwarder subagent + companion runtime), but the spawned CLI is `claude` itself talking to a rotated backend.
 
 ## Quick start
 
