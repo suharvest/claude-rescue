@@ -1,8 +1,8 @@
 // lib/job-control.mjs — background job lifecycle management
-import { writeFileSync, readFileSync, readdirSync, createWriteStream, existsSync } from 'fs';
+import { writeFileSync, readFileSync, readdirSync, existsSync, openSync, closeSync, statSync } from 'fs';
 import { join } from 'path';
 import { spawn } from 'child_process';
-import { newJobId, ensureJobDir, jobDir, stateRoot } from './state.mjs';
+import { newJobId, ensureJobDir, jobDir, stateRoot, readJobMeta, listRunningJobs, listAllJobs, sortJobsNewestFirst } from './state.mjs';
 import { resolveSource, resolveEnv, assertDepthOk, currentDepth } from './sources.mjs';
 
 function writeMeta(dir, data) {
@@ -10,22 +10,23 @@ function writeMeta(dir, data) {
 }
 
 export function getJob(jobId) {
-  const metaPath = join(jobDir(jobId), 'meta.json');
-  if (!existsSync(metaPath)) throw new Error(`Job not found: ${jobId}`);
-  return JSON.parse(readFileSync(metaPath, 'utf8'));
+  return readJobMeta(jobId);
 }
 
 export function listJobs(n = 10) {
-  const jobsDir = join(stateRoot(), 'jobs');
-  if (!existsSync(jobsDir)) return [];
-  const dirs = readdirSync(jobsDir).sort().reverse().slice(0, n);
-  return dirs.map(id => {
-    try { return { id, ...getJob(id) }; } catch { return null; }
+  const allIds = listAllJobs();
+  const sorted = sortJobsNewestFirst(allIds).slice(0, n);
+  return sorted.map(id => {
+    const meta = readJobMeta(id);
+    return meta ? { id, ...meta } : null;
   }).filter(Boolean);
 }
 
+export { listRunningJobs, listAllJobs, sortJobsNewestFirst };
+
 export function cancelJob(jobId) {
   const meta = getJob(jobId);
+  if (!meta) throw new Error(`Job not found: ${jobId}`);
   if (meta.status !== 'running') {
     throw new Error(`Job ${jobId} is not running (status: ${meta.status})`);
   }
@@ -35,7 +36,6 @@ export function cancelJob(jobId) {
     process.kill(meta.pid, 'SIGTERM');
   } catch (err) {
     if (err.code === 'ESRCH') {
-      // Process already dead — mark as orphaned but still succeed
       meta.status = 'orphaned';
     } else {
       throw err;
@@ -51,6 +51,8 @@ export function cancelJob(jobId) {
   return meta;
 }
 
+// Double-fork pattern: parent (this process) spawns a task-worker that spawns claude.
+// The parent returns immediately; the worker stays detached and manages claude.
 export async function startJob(opts) {
   // opts: { prompt, source, model, cwd, resume }
   assertDepthOk();
@@ -64,19 +66,6 @@ export async function startJob(opts) {
 
   writeFileSync(join(dir, 'prompt.txt'), opts.prompt);
 
-  const args = [
-    '--print',
-    '--output-format', 'stream-json',
-    '--permission-mode', 'bypassPermissions',
-    '--verbose',
-  ];
-  if (model) args.push('--model', model);
-  if (opts.resume) args.push('--resume', opts.resume);
-  args.push(opts.prompt);
-
-  const stdoutLog = createWriteStream(join(dir, 'stdout.log'));
-  const stderrLog = createWriteStream(join(dir, 'stderr.log'));
-
   const meta = {
     jobId,
     source: source.name,
@@ -84,6 +73,7 @@ export async function startJob(opts) {
     depth,
     cwd: opts.cwd || process.cwd(),
     prompt_preview: opts.prompt.slice(0, 120),
+    resume: opts.resume || null,
     started_at: new Date().toISOString(),
     pid: null,
     status: 'running',
@@ -93,52 +83,118 @@ export async function startJob(opts) {
   };
   writeMeta(dir, meta);
 
-  const child = spawn('claude', args, {
-    env,
-    cwd: opts.cwd || process.cwd(),
-    stdio: ['ignore', 'pipe', 'pipe'],
+  // Double-fork: spawn task-worker with stdio: 'ignore', detached: true.
+  // Resolve the companion script relative to this file's location so it works
+  // wherever the plugin is installed.
+  const companionPath = join(new URL('.', import.meta.url).pathname, '..', 'claude-companion.mjs');
+
+  const workerArgs = [
+    companionPath,
+    'task-worker',
+    '--job-id', jobId,
+  ];
+
+  const worker = spawn(process.execPath, workerArgs, {
+    cwd: dir,
+    env: { ...process.env, ...env },
     detached: true,
+    stdio: 'ignore',
   });
 
-  meta.pid = child.pid;
+  worker.unref();
+
+  // Update meta with worker pid
+  meta.pid = worker.pid;
   writeMeta(dir, meta);
 
-  // Pipe stdout through a transform to capture session_id
-  let sessionIdBuffer = '';
-  const sessionCapture = new (await import('stream')).Transform({
-    transform(chunk, enc, cb) {
-      const str = chunk.toString();
-      sessionIdBuffer += str;
-      // Look for session_id in first few lines
-      if (!meta.session_id) {
-        const lines = sessionIdBuffer.split('\n');
-        for (const line of lines) {
-          try {
-            const event = JSON.parse(line);
-            if (event.session_id) {
-              meta.session_id = event.session_id;
-              writeMeta(dir, meta);
-              break;
-            }
-          } catch {}
-        }
-      }
-      cb(null, chunk);
-    },
+  return jobId;
+}
+
+// Run task-worker: spawned by startJob to actually run claude
+export async function runTaskWorker(jobId) {
+  const dir = jobDir(jobId);
+  const meta = readJobMeta(jobId);
+  if (!meta) throw new Error(`Job not found: ${jobId}`);
+
+  // Open log files in append mode (get file descriptors)
+  const stdoutFd = openSync(join(dir, 'stdout.log'), 'a');
+  const stderrFd = openSync(join(dir, 'stderr.log'), 'a');
+
+  const source = resolveSource(meta.source);
+  const env = resolveEnv(source);
+  const model = meta.model || source.model;
+
+  const args = [
+    '--print',
+    '--output-format', 'stream-json',
+    '--permission-mode', 'bypassPermissions',
+    '--verbose',
+  ];
+  if (model) args.push('--model', model);
+  if (meta.resume) args.push('--resume', meta.resume);
+  // Read prompt from prompt.txt
+  const prompt = readFileSync(join(dir, 'prompt.txt'), 'utf8');
+  args.push(prompt);
+
+  // Spawn claude grandchild
+  const claude = spawn('claude', args, {
+    env,
+    cwd: meta.cwd || process.cwd(),
+    stdio: ['ignore', stdoutFd, stderrFd],
+    detached: false, // Not detached - we want to wait for it
   });
 
-  child.stdout.pipe(sessionCapture).pipe(stdoutLog);
-  child.stderr.pipe(stderrLog);
+  // SIGTERM handler: propagate to claude, update status
+  const onSigterm = () => {
+    try {
+      claude.kill('SIGTERM');
+    } catch {}
+    meta.status = 'cancelled';
+    meta.exit_code = -15;
+    meta.ended_at = new Date().toISOString();
+    writeMeta(dir, meta);
+    closeSync(stdoutFd);
+    closeSync(stderrFd);
+    process.exit(0);
+  };
+  process.on('SIGTERM', onSigterm);
 
-  child.on('close', (code) => {
+  // Wait for claude to exit
+  claude.on('close', (code) => {
+    // Scan first ~4KB of stdout.log for session_id
+    try {
+      const logData = readFileSync(join(dir, 'stdout.log'), 'utf8');
+      const firstChunk = logData.slice(0, 4096);
+      const lines = firstChunk.split('\n');
+      for (const line of lines) {
+        try {
+          const event = JSON.parse(line);
+          if (event.session_id) {
+            meta.session_id = event.session_id;
+            break;
+          }
+        } catch {}
+      }
+    } catch {}
+
     meta.status = code === 0 ? 'done' : 'failed';
     meta.exit_code = code ?? -1;
     meta.ended_at = new Date().toISOString();
     writeMeta(dir, meta);
-    stdoutLog.end();
-    stderrLog.end();
+
+    closeSync(stdoutFd);
+    closeSync(stderrFd);
+    process.exit(code ?? 0);
   });
 
-  child.unref();
-  return jobId;
+  claude.on('error', (err) => {
+    meta.status = 'failed';
+    meta.exit_code = -1;
+    meta.error_message = err.message;
+    meta.ended_at = new Date().toISOString();
+    writeMeta(dir, meta);
+    closeSync(stdoutFd);
+    closeSync(stderrFd);
+    process.exit(1);
+  });
 }

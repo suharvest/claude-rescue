@@ -1,12 +1,15 @@
 #!/usr/bin/env node
 // claude-companion.mjs — CLI entry point for claude-rescue plugin
 import { readFileSync, existsSync } from 'fs';
-import { join } from 'path';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
 import { spawnClaude } from './lib/claude.mjs';
-import { startJob, getJob, listJobs, cancelJob } from './lib/job-control.mjs';
+import { startJob, getJob, listJobs, cancelJob, runTaskWorker, listRunningJobs } from './lib/job-control.mjs';
 import { loadSources } from './lib/sources.mjs';
 import { jobDir } from './lib/state.mjs';
 import { createRenderer } from './lib/render.mjs';
+
+const __dir = dirname(fileURLToPath(import.meta.url));
 
 function parseArgs(argv) {
   const args = argv.slice(2);
@@ -18,10 +21,12 @@ function parseArgs(argv) {
     if (a === '--background') { result.flags.background = true; }
     else if (a === '--wait') { result.flags.wait = true; }
     else if (a === '--raw') { result.flags.raw = true; }
+    else if (a === '--json') { result.flags.json = true; }
     else if (a === '--source' && args[i + 1]) { result.flags.source = args[++i]; }
     else if (a === '--model' && args[i + 1]) { result.flags.model = args[++i]; }
     else if (a === '--cwd' && args[i + 1]) { result.flags.cwd = args[++i]; }
     else if (a === '--resume' && args[i + 1]) { result.flags.resume = args[++i]; }
+    else if (a === '--job-id' && args[i + 1]) { result.flags.jobId = args[++i]; }
     else if (!a.startsWith('--')) { result.positional.push(a); }
   }
   return result;
@@ -63,7 +68,7 @@ async function cmdTask(parsed) {
     const jobId = await startJob(opts);
     console.log(`[claude-rescue] Job started: ${jobId}`);
     console.log(`[claude-rescue] Tail logs: tail -f ~/.claude/plugins/data/claude-rescue/jobs/${jobId}/stdout.log`);
-    console.log(`[claude-rescue] Check status: node claude-companion.mjs status ${jobId}`);
+    console.log(`[claude-rescue] Check status: node scripts/claude-companion.mjs status ${jobId}`);
     return;
   }
 
@@ -83,16 +88,41 @@ async function cmdTask(parsed) {
   process.exit(code);
 }
 
+async function cmdTaskWorker(parsed) {
+  const jobId = parsed.flags.jobId;
+  if (!jobId) {
+    console.error('Usage: task-worker --job-id <job-id>');
+    process.exit(1);
+  }
+  await runTaskWorker(jobId);
+}
+
 async function cmdStatus(parsed) {
   const jobId = parsed.positional[0];
   if (jobId) {
     const meta = getJob(jobId);
-    console.log(JSON.stringify(meta, null, 2));
+    if (parsed.flags.json) {
+      console.log(JSON.stringify(meta, null, 2));
+    } else {
+      console.log(`Job: ${jobId}`);
+      console.log(`Status: ${meta?.status}`);
+      console.log(`Source: ${meta?.source}`);
+      console.log(`Model: ${meta?.model}`);
+      console.log(`Started: ${meta?.started_at}`);
+      console.log(`Ended: ${meta?.ended_at || '(still running)'}`);
+      console.log(`Session: ${meta?.session_id || '(not captured yet)'}`);
+      console.log(`Exit code: ${meta?.exit_code ?? '(none)'}`);
+      console.log(`PID: ${meta?.pid}`);
+    }
   } else {
     const jobs = listJobs(10);
     if (!jobs.length) { console.log('No jobs found.'); return; }
-    const rows = jobs.map(j => [j.jobId || j.id, j.status, j.source, j.started_at, j.prompt_preview]);
-    printTable(rows, ['job-id', 'status', 'source', 'started_at', 'prompt_preview']);
+    if (parsed.flags.json) {
+      console.log(JSON.stringify(jobs, null, 2));
+    } else {
+      const rows = jobs.map(j => [j.id || j.jobId, j.status, j.source, j.started_at, (j.prompt_preview || '').slice(0, 40)]);
+      printTable(rows, ['job-id', 'status', 'source', 'started_at', 'prompt_preview']);
+    }
   }
 }
 
@@ -116,13 +146,14 @@ async function main() {
   try {
     switch (parsed.cmd) {
       case 'task':         await cmdTask(parsed); break;
+      case 'task-worker':  await cmdTaskWorker(parsed); break;
       case 'status':       await cmdStatus(parsed); break;
       case 'result':       await cmdResult(parsed); break;
       case 'cancel':       await cmdCancel(parsed); break;
       case 'list-sources': await cmdListSources(parsed); break;
       default:
         console.error(`Unknown command: ${parsed.cmd}`);
-        console.error('Commands: task, status, result, cancel, list-sources');
+        console.error('Commands: task, task-worker, status, result, cancel, list-sources');
         process.exit(1);
     }
   } catch (err) {
