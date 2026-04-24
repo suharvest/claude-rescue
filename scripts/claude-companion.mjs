@@ -6,6 +6,7 @@ import { spawnClaude } from './lib/claude.mjs';
 import { startJob, getJob, listJobs, cancelJob } from './lib/job-control.mjs';
 import { loadSources } from './lib/sources.mjs';
 import { jobDir } from './lib/state.mjs';
+import { createRenderer } from './lib/render.mjs';
 
 function parseArgs(argv) {
   const args = argv.slice(2);
@@ -16,9 +17,11 @@ function parseArgs(argv) {
     const a = args[i];
     if (a === '--background') { result.flags.background = true; }
     else if (a === '--wait') { result.flags.wait = true; }
+    else if (a === '--raw') { result.flags.raw = true; }
     else if (a === '--source' && args[i + 1]) { result.flags.source = args[++i]; }
     else if (a === '--model' && args[i + 1]) { result.flags.model = args[++i]; }
     else if (a === '--cwd' && args[i + 1]) { result.flags.cwd = args[++i]; }
+    else if (a === '--resume' && args[i + 1]) { result.flags.resume = args[++i]; }
     else if (!a.startsWith('--')) { result.positional.push(a); }
   }
   return result;
@@ -46,13 +49,14 @@ async function cmdListSources() {
 
 async function cmdTask(parsed) {
   const prompt = parsed.positional[0];
-  if (!prompt) { console.error('Usage: task "<prompt>" [--source <name>] [--model <model>] [--cwd <dir>] [--background]'); process.exit(1); }
+  if (!prompt) { console.error('Usage: task "<prompt>" [--source <name>] [--model <model>] [--cwd <dir>] [--background] [--raw]'); process.exit(1); }
 
   const opts = {
     prompt,
     source: parsed.flags.source,
     model: parsed.flags.model,
     cwd: parsed.flags.cwd,
+    resume: parsed.flags.resume,
   };
 
   if (parsed.flags.background) {
@@ -63,8 +67,19 @@ async function cmdTask(parsed) {
     return;
   }
 
-  // Foreground: stream directly to stdout
-  const code = await spawnClaude({ ...opts, stdout: process.stdout, stderr: process.stderr });
+  // Foreground: stream through renderer (unless --raw)
+  let sessionId = null;
+  const renderer = createRenderer({
+    raw: parsed.flags.raw,
+    onSessionId: (id) => { sessionId = id; },
+  });
+  renderer.pipe(process.stdout);
+
+  const code = await spawnClaude({ ...opts, stdout: renderer, stderr: process.stderr });
+
+  if (sessionId) {
+    console.log(`[claude-rescue] session-id: ${sessionId}`);
+  }
   process.exit(code);
 }
 

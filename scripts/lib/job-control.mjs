@@ -52,7 +52,7 @@ export function cancelJob(jobId) {
 }
 
 export async function startJob(opts) {
-  // opts: { prompt, source, model, cwd }
+  // opts: { prompt, source, model, cwd, resume }
   assertDepthOk();
   const jobId = newJobId();
   const dir = ensureJobDir(jobId);
@@ -71,6 +71,7 @@ export async function startJob(opts) {
     '--verbose',
   ];
   if (model) args.push('--model', model);
+  if (opts.resume) args.push('--resume', opts.resume);
   args.push(opts.prompt);
 
   const stdoutLog = createWriteStream(join(dir, 'stdout.log'));
@@ -88,6 +89,7 @@ export async function startJob(opts) {
     status: 'running',
     exit_code: null,
     ended_at: null,
+    session_id: null,
   };
   writeMeta(dir, meta);
 
@@ -101,7 +103,31 @@ export async function startJob(opts) {
   meta.pid = child.pid;
   writeMeta(dir, meta);
 
-  child.stdout.pipe(stdoutLog);
+  // Pipe stdout through a transform to capture session_id
+  let sessionIdBuffer = '';
+  const sessionCapture = new (await import('stream')).Transform({
+    transform(chunk, enc, cb) {
+      const str = chunk.toString();
+      sessionIdBuffer += str;
+      // Look for session_id in first few lines
+      if (!meta.session_id) {
+        const lines = sessionIdBuffer.split('\n');
+        for (const line of lines) {
+          try {
+            const event = JSON.parse(line);
+            if (event.session_id) {
+              meta.session_id = event.session_id;
+              writeMeta(dir, meta);
+              break;
+            }
+          } catch {}
+        }
+      }
+      cb(null, chunk);
+    },
+  });
+
+  child.stdout.pipe(sessionCapture).pipe(stdoutLog);
   child.stderr.pipe(stderrLog);
 
   child.on('close', (code) => {
