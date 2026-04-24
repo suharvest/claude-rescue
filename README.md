@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="media/logo.png" alt="claude-rescue" width="180">
+</p>
+
 <h1 align="center">claude-rescue</h1>
 
 <p align="center">
@@ -47,7 +51,7 @@ Every other Claude Code multi-backend tool routes the **whole session** to one a
 
 ```bash
 # 1. clone + symlink into Claude Code
-git clone https://github.com/<you>/claude-rescue ~/project/claude-rescue
+git clone https://github.com/suharvest/claude-rescue ~/project/claude-rescue
 ln -s ~/project/claude-rescue ~/.claude/plugins/local/claude-rescue
 
 # 2. copy the template and add your favorite backends

@@ -1,6 +1,22 @@
 {
   "name": "claude-rescue",
   "version": "0.1.0",
-  "description": "Delegate long tasks to an independent Claude instance with configurable Anthropic-compatible backend",
-  "author": "harvest"
+  "description": "Hot-swap models mid-task inside Claude Code. Dispatch to any Anthropic-compatible backend (DeepSeek, GLM, Qwen, Kimi, ...) per call, without touching your main-thread subscription.",
+  "author": {
+    "name": "suharvest",
+    "email": "suharvest@gmail.com",
+    "url": "https://github.com/suharvest"
+  },
+  "repository": "https://github.com/suharvest/claude-rescue",
+  "license": "MIT",
+  "keywords": [
+    "claude-code",
+    "anthropic",
+    "subagent",
+    "multi-model",
+    "deepseek",
+    "glm",
+    "qwen",
+    "plugin"
+  ]
 }
