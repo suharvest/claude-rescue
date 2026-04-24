@@ -3,7 +3,7 @@
 import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { spawnClaude } from './lib/claude.mjs';
-import { startJob, getJob, listJobs } from './lib/job-control.mjs';
+import { startJob, getJob, listJobs, cancelJob } from './lib/job-control.mjs';
 import { loadSources } from './lib/sources.mjs';
 import { jobDir } from './lib/state.mjs';
 
@@ -89,6 +89,13 @@ async function cmdResult(parsed) {
   process.stdout.write(readFileSync(logPath));
 }
 
+async function cmdCancel(parsed) {
+  const jobId = parsed.positional[0];
+  if (!jobId) { console.error('Usage: cancel <job-id>'); process.exit(1); }
+  const meta = cancelJob(jobId);
+  console.log(`[claude-rescue] Cancelled job ${jobId} (pid ${meta.pid})`);
+}
+
 async function main() {
   const parsed = parseArgs(process.argv);
   try {
@@ -96,10 +103,11 @@ async function main() {
       case 'task':         await cmdTask(parsed); break;
       case 'status':       await cmdStatus(parsed); break;
       case 'result':       await cmdResult(parsed); break;
-      case 'list-sources': await cmdListSources(); break;
+      case 'cancel':       await cmdCancel(parsed); break;
+      case 'list-sources': await cmdListSources(parsed); break;
       default:
         console.error(`Unknown command: ${parsed.cmd}`);
-        console.error('Commands: task, status, result, list-sources');
+        console.error('Commands: task, status, result, cancel, list-sources');
         process.exit(1);
     }
   } catch (err) {

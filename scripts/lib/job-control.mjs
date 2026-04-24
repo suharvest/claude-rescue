@@ -24,6 +24,33 @@ export function listJobs(n = 10) {
   }).filter(Boolean);
 }
 
+export function cancelJob(jobId) {
+  const meta = getJob(jobId);
+  if (meta.status !== 'running') {
+    throw new Error(`Job ${jobId} is not running (status: ${meta.status})`);
+  }
+
+  const dir = jobDir(jobId);
+  try {
+    process.kill(meta.pid, 'SIGTERM');
+  } catch (err) {
+    if (err.code === 'ESRCH') {
+      // Process already dead — mark as orphaned but still succeed
+      meta.status = 'orphaned';
+    } else {
+      throw err;
+    }
+  }
+
+  if (meta.status !== 'orphaned') {
+    meta.status = 'cancelled';
+  }
+  meta.exit_code = -15;
+  meta.ended_at = new Date().toISOString();
+  writeMeta(dir, meta);
+  return meta;
+}
+
 export async function startJob(opts) {
   // opts: { prompt, source, model, cwd }
   assertDepthOk();
