@@ -1,154 +1,182 @@
-# claude-rescue
+<h1 align="center">claude-rescue</h1>
 
-> **One Claude Code conversation. Many models — official and not.**
+<p align="center">
+  <strong>No restart. No reconfig. Call any model mid-task from inside Claude Code.</strong>
+</p>
 
-Talk to Claude Code as usual. Within the same session, let it dispatch subtasks to DeepSeek, GLM, Qwen, Kimi, MiniMax, or any Anthropic-compatible backend — each call isolated in its own subprocess with its own key, endpoint, and model. Your main thread stays on your Pro/Max subscription and keeps full context; the heavy lifting goes elsewhere.
+<p align="center">
+  Hot-swap between <b>Claude</b>, <b>DeepSeek</b>, <b>GLM</b>, <b>Qwen</b>, <b>Kimi</b>, or any Anthropic-compatible backend — <i>within the same conversation</i>, without ever leaving your Claude Code session.
+</p>
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│  You ⇄ Claude Code (Opus/Sonnet, your subscription)         │
-│          │                                                  │
-│          ├─ Agent: claude-rescue ──▶ claude -p ⇢ GLM-5      │
-│          ├─ Agent: claude-rescue ──▶ claude -p ⇢ DeepSeek   │
-│          └─ Agent: claude-rescue ──▶ claude -p ⇢ Qwen3.6    │
-└─────────────────────────────────────────────────────────────┘
-```
+<p align="center">
+  <a href="#license"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License"></a>
+  <img src="https://img.shields.io/badge/node-%E2%89%A518-brightgreen.svg" alt="Node >=18">
+  <img src="https://img.shields.io/badge/Claude%20Code-plugin-ff6b35.svg" alt="Claude Code plugin">
+  <img src="https://img.shields.io/badge/API-Anthropic--compatible-9cf.svg" alt="Anthropic-compatible">
+</p>
 
-## What it solves
+<!-- TODO: demo GIF here — ~20s showing main Claude dispatching to GLM for vision, then DeepSeek for reasoning, in one conversation -->
 
-**"Can I have a single Claude Code conversation where Claude Code can use multiple models, including non-official ones?"** — yes. That's the whole product.
+---
 
-Built-in Claude Code subagents share the parent's auth and are locked to official Anthropic models. Proxy-style routers (`claude-code-router`, `cc-switch`) solve "switch the whole session to one alt backend" — useful, but different problem: your main thread is no longer native Claude once a proxy is in front. `claude-rescue` keeps the main thread untouched and gives you **per-dispatch** backend selection:
+## The scenario
 
-- **Save subscription quota** — offload long jobs to pay-as-you-go or cheap third-party providers, main thread keeps its plan warm.
-- **Right model per task** — GLM-5 for long-context, DeepSeek-v4-pro for deep reasoning, Qwen3.6-Plus for vision, Sonnet for polish.
-- **Isolation** — each dispatch is a fresh `claude` subprocess with its own env, CWD, and job dir. Fail one, the others keep running.
-- **No proxy in front of your main thread.** You're still talking to real Claude.
+You ask Claude Code to refactor a module. Mid-task:
 
-Architecturally mirrors the `codex-rescue` / `opencode-rescue` pattern (thin forwarder subagent + companion runtime), but the spawned CLI is `claude` itself talking to a rotated backend.
+> 🖼️ Needs to read a design diagram → dispatches to `qwen3.6-plus` (vision)
+> 🧠 Needs deep root-cause analysis → dispatches to `deepseek-v4-pro` (thinking mode)
+> ✍️ Back to the main thread, Sonnet writes the patch.
+
+**Three models. One conversation. Zero restarts.**
+
+## Why this, not a router?
+
+Every other Claude Code multi-backend tool routes the **whole session** to one alternate provider. Your main thread stops being native Claude the moment a proxy sits in front of it.
+
+`claude-rescue` keeps the main thread on your real Claude subscription and gives you **per-call** backend selection via a subagent.
+
+| | `claude-code-router` | `cc-switch` | Official `/model` | **`claude-rescue`** |
+|---|:---:|:---:|:---:|:---:|
+| Main thread stays native Claude | ❌ (proxied) | depends | ✅ | **✅** |
+| Switch backend mid-conversation | ⚠️ restart | ❌ restart | ⚠️ same vendor | **✅ one prompt** |
+| Different backend per subtask | ⚠️ via tag | ❌ | ❌ | **✅ built-in** |
+| Subprocess isolation + logs | ❌ | ❌ | ❌ | **✅** |
+| Pattern match with `codex-rescue` / `opencode-rescue` | ❌ | ❌ | ❌ | **✅** |
 
 ## Quick start
 
-### 1. Install as a local Claude Code plugin
-
 ```bash
+# 1. clone + symlink into Claude Code
 git clone https://github.com/<you>/claude-rescue ~/project/claude-rescue
 ln -s ~/project/claude-rescue ~/.claude/plugins/local/claude-rescue
+
+# 2. copy the template and add your favorite backends
+cp ~/project/claude-rescue/scripts/sources.example.json \
+   ~/project/claude-rescue/scripts/sources.json
+$EDITOR ~/project/claude-rescue/scripts/sources.json
+
+# 3. export the secrets referenced by sources.json (any method — see below)
+export DEEPSEEK_API_KEY=sk-...
+
+# 4. start Claude Code and dispatch
+claude
 ```
 
-Or install the subagent directly:
+Inside the session:
 
-```bash
-# Point CLAUDE_PLUGIN_ROOT manually in agents/claude-rescue.md, then:
-ln -s ~/project/claude-rescue/agents/claude-rescue.md ~/.claude/agents/claude-rescue.md
+```
+Agent(subagent_type="claude-rescue", prompt="refactor this module source=deepseek-pro")
 ```
 
-### 2. Configure sources
+That's it. The subagent spawns an isolated `claude -p` subprocess pointed at DeepSeek, streams the result back, and your main thread keeps its full context.
 
-```bash
-cp scripts/sources.example.json scripts/sources.json
-$EDITOR scripts/sources.json
-```
+## Configure sources
 
-Each source is an (env + model) combo pointing at any **Anthropic-compatible** endpoint:
+Each source is an (env + model) combo pointing at any **Anthropic-compatible** endpoint. `${VAR}` placeholders are resolved from the runtime `process.env` — claude-rescue never reads your secret store directly.
 
 ```jsonc
 {
   "default": "my-payg",
   "sources": {
     "my-payg": {
-      "env": { "ANTHROPIC_API_KEY": "@secret:ANTHROPIC_PAYG" },
+      "env": { "ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY}" },
       "model": "claude-sonnet-4-6"
     },
     "deepseek-pro": {
       "env": {
         "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic",
-        "ANTHROPIC_AUTH_TOKEN": "@secret:DEEPSEEK_KEY"
+        "ANTHROPIC_AUTH_TOKEN": "${DEEPSEEK_API_KEY}"
       },
       "model": "deepseek-v4-pro"
+    },
+    "glm-5": {
+      "env": {
+        "ANTHROPIC_BASE_URL": "https://coding.dashscope.aliyuncs.com/apps/anthropic",
+        "ANTHROPIC_AUTH_TOKEN": "${ALIYUN_CODINGPLAN_KEY}"
+      },
+      "model": "glm-5"
     }
   }
 }
 ```
 
-### 3. Provide env vars
-
-`${VAR}` placeholders are resolved from the companion's own `process.env` at invocation time. **claude-rescue does not read any secret store directly** — pick whatever workflow you prefer:
+Bring secrets in however you like:
 
 ```bash
-# plain shell
-export ANTHROPIC_API_KEY=sk-ant-...
-export DEEPSEEK_KEY=sk-...
-claude                                      # all downstream dispatches inherit these
-
-# direnv / .envrc
-echo 'export DEEPSEEK_KEY=sk-...' >> ~/project/my-repo/.envrc && direnv allow
-
-# 1Password CLI
-op run --env-file=.env.1p -- claude
-
+export DEEPSEEK_API_KEY=sk-...                      # plain shell
+direnv allow                                         # direnv / .envrc
+op run --env-file=.env.1p -- claude                  # 1Password CLI
 # pass / bitwarden / vault / age — wrap however you like
 ```
 
-If a required env var is missing, the companion fails with a clear `Env var "X" is not set` message instead of silently hitting a 401.
-
-### 4. Dispatch
-
-From the main Claude Code thread:
-
-```
-Agent(subagent_type="claude-rescue", prompt="refactor this module source=deepseek-pro")
-```
-
-Or directly:
-
-```bash
-node scripts/claude-companion.mjs task "refactor this module" --source deepseek-pro
-node scripts/claude-companion.mjs task "long job"             --source deepseek-pro --background
-node scripts/claude-companion.mjs list-sources
-node scripts/claude-companion.mjs status <job-id>
-node scripts/claude-companion.mjs result <job-id>
-```
+Missing a required var? The companion fails fast with `Env var "X" is not set` — never silently hits a 401.
 
 ## Known-good backends
-
-Any Anthropic-compatible endpoint works. Tested:
 
 | Provider | `ANTHROPIC_BASE_URL` | Example models |
 |---|---|---|
 | Anthropic (official) | _(unset)_ | `claude-sonnet-4-6`, `claude-opus-4-7` |
 | DeepSeek | `https://api.deepseek.com/anthropic` | `deepseek-v4-pro`, `deepseek-v4-flash` |
-| Aliyun Model Studio CodingPlan | `https://coding.dashscope.aliyuncs.com/apps/anthropic` | `qwen3.6-plus`, `glm-5`, `glm-4.7`, `kimi-k2.5`, `MiniMax-M2.5` |
+| Aliyun Model Studio CodingPlan | `https://coding.dashscope.aliyuncs.com/apps/anthropic` | `qwen3.6-plus`, `qwen3-max-2026-01-23`, `glm-5`, `glm-4.7`, `kimi-k2.5`, `MiniMax-M2.5` |
 | Zhipu BigModel | `https://open.bigmodel.cn/api/anthropic` | `glm-4.7`, `glm-4.5-flash` |
-| [claude-code-router](https://github.com/musistudio/claude-code-router) | `http://localhost:3456` | any (router maps to OpenAI/Gemini/etc.) |
+| [`claude-code-router`](https://github.com/musistudio/claude-code-router) | `http://localhost:3456` | any (router maps to OpenAI / Gemini / Ollama / ...) |
+
+Any other Anthropic-compatible endpoint works — just drop it into `sources.json`.
+
+## Usage
+
+From the main Claude Code thread:
+
+```
+Agent(subagent_type="claude-rescue", prompt="<task> source=<name> [model=<override>] [background]")
+```
+
+Or invoke the companion directly:
+
+```bash
+node scripts/claude-companion.mjs task "<task>" --source deepseek-pro
+node scripts/claude-companion.mjs task "<task>" --source deepseek-pro --background
+node scripts/claude-companion.mjs list-sources
+node scripts/claude-companion.mjs status <job-id>
+node scripts/claude-companion.mjs result <job-id>
+```
+
+### Nesting
+
+You can dispatch **from inside a dispatched run** — e.g. GLM-5 delegates a vision subtask to Qwen3.6-Plus. Depth is capped at **3** by default to prevent runaway cost; override with `CLAUDE_RESCUE_MAX_DEPTH=<n>`. The current depth is exposed to each child via `CLAUDE_RESCUE_DEPTH` and recorded in `jobs/<id>/meta.json`.
 
 ## How it works
 
 ```
-main Claude Code (your subscription)
+main Claude Code (your subscription, native)
         │
         ▼  Agent(subagent_type="claude-rescue", prompt="... source=X")
 ┌──────────────────┐
-│ claude-rescue.md │  thin forwarder (ships with this repo)
+│ claude-rescue.md │  thin forwarder subagent
 └────────┬─────────┘
          │  Bash: node claude-companion.mjs task ...
          ▼
 ┌──────────────────┐
 │ claude-companion │  loads source from sources.json
-│ (Node.js, ~400 LOC) │  resolves @secret: from ~/.claude/secrets.json
-│                  │  strips ANTHROPIC_* from env
-└────────┬─────────┘  spawns fresh claude with chosen env + model
+│  (Node, ~450 LOC)│  resolves ${VAR} from process.env
+│                  │  strips parent ANTHROPIC_* from env
+└────────┬─────────┘  spawns fresh `claude -p` with chosen env + model
          ▼
 ┌──────────────────┐
-│ claude -p        │  ← talks to YOUR chosen backend, not subscription
-│ --model X --...  │
+│  claude -p       │  ← talks to YOUR chosen backend
+│  --model X ...   │    (subscription stays untouched)
 └──────────────────┘
 ```
 
 ## Status
 
-MVP. Works end-to-end. Intentionally minimal — no hooks, no slash commands, no review/adversarial modes. See [GAPS.md](GAPS.md) for what's missing vs the reference codex/opencode rescue plugins.
+**MVP.** End-to-end working. Intentionally minimal — no hooks, no slash commands, no review/adversarial modes. See [GAPS.md](GAPS.md) for the roadmap and feature gap vs. the reference `codex-rescue` / `opencode-rescue` plugins.
+
+## Acknowledgements
+
+- Architecture pattern adapted from [`openai-codex/codex`](https://github.com/openai/codex) (the Claude Code `codex-rescue` plugin) and [`tasict/opencode-plugin-cc`](https://github.com/tasict/opencode-plugin-cc) (the `opencode-rescue` plugin) — thin forwarder subagent + Node companion runtime.
+- Inspired by the "orchestrate on one model, execute elsewhere" pattern emerging in multi-model agent stacks.
 
 ## License
 
-MIT
+[MIT](LICENSE) © 2026 harvest
