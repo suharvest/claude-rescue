@@ -1,11 +1,14 @@
 #!/usr/bin/env node
 // stop-review-gate-hook.mjs — invoked on Stop event, blocks stop if jobs are running
+// Session-scoped: only considers jobs tracked for the current session_id
+// Respects config.stopReviewGate: if false, always allows stop
 import fs from 'fs';
 import path from 'path';
 import process from 'process';
 import { fileURLToPath } from 'url';
 
-import { listRunningJobs, reapOrphanedJobs } from '../lib/state.mjs';
+import { listRunningJobs, reapOrphanedJobs, getConfig } from '../lib/state.mjs';
+import { listTrackedJobIds, SESSION_ID_ENV } from '../lib/tracked-jobs.mjs';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 
@@ -43,25 +46,47 @@ function buildRunningJobsSummary(runningJobs) {
   return lines.join('\n');
 }
 
+// Filter running jobs to only those tracked for the current session.
+function filterJobsForSession(runningJobs, sessionId) {
+  if (!sessionId) {
+    // No session_id — fall back to global scan (backward compat)
+    return runningJobs;
+  }
+  const trackedIds = listTrackedJobIds(sessionId);
+  return runningJobs.filter(job => trackedIds.includes(job.id));
+}
+
 function main() {
-  // Prune dead running-status jobs before deciding — avoids false-positive blocks
-  // when a previous session died without updating meta.
-  reapOrphanedJobs();
-
-  readHookInput(); // drain stdin per hook protocol
-  const runningJobs = listRunningJobs();
-
-  if (runningJobs.length === 0) {
-    // No running jobs — allow stop
+  // Check config: if stopReviewGate is disabled, always allow stop
+  const config = getConfig();
+  if (!config.stopReviewGate) {
+    readHookInput(); // drain stdin per hook protocol
     emitDecision({});
     return;
   }
 
-  // There are running jobs — block stop and surface them
-  const summary = buildRunningJobsSummary(runningJobs);
+  // Prune dead running-status jobs before deciding — avoids false-positive blocks
+  // when a previous session died without updating meta.
+  reapOrphanedJobs();
+
+  const input = readHookInput();
+  const sessionId = input.session_id || process.env[SESSION_ID_ENV] || null;
+  const runningJobs = listRunningJobs();
+
+  // Apply session-scoped filtering
+  const sessionJobs = filterJobsForSession(runningJobs, sessionId);
+
+  if (sessionJobs.length === 0) {
+    // No running jobs for this session — allow stop
+    emitDecision({});
+    return;
+  }
+
+  // There are running jobs for this session — block stop and surface them
+  const summary = buildRunningJobsSummary(sessionJobs);
 
   const reason = [
-    `Claude-rescue has ${runningJobs.length} job(s) still running:`,
+    `Claude-rescue has ${sessionJobs.length} job(s) still running for this session:`,
     summary,
     '',
     'Check job status with: node scripts/claude-companion.mjs status',

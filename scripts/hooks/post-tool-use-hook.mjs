@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 // post-tool-use-hook.mjs — invoked after Agent/Bash calls, surfaces running jobs status
+// Session-scoped: only surfaces jobs tracked for the current session_id
 import fs from 'fs';
 import process from 'process';
 import { fileURLToPath } from 'url';
 
 import { listRunningJobs } from '../lib/state.mjs';
+import { listTrackedJobIds, SESSION_ID_ENV } from '../lib/tracked-jobs.mjs';
 
 function readHookInput() {
   try {
@@ -27,15 +29,30 @@ function formatElapsed(startValue) {
   return `${totalSeconds}s`;
 }
 
+// Filter running jobs to only those tracked for the current session.
+function filterJobsForSession(runningJobs, sessionId) {
+  if (!sessionId) {
+    // No session_id — fall back to global scan (backward compat)
+    return runningJobs;
+  }
+  const trackedIds = listTrackedJobIds(sessionId);
+  return runningJobs.filter(job => trackedIds.includes(job.id));
+}
+
 function main() {
   const input = readHookInput();
   const toolName = input.tool_name || '';
   if (toolName !== 'Agent' && toolName !== 'Bash') return;
 
+  const sessionId = input.session_id || process.env[SESSION_ID_ENV] || null;
   const runningJobs = listRunningJobs();
-  if (runningJobs.length === 0) return;
 
-  const summaries = runningJobs.map(j => {
+  // Apply session-scoped filtering
+  const sessionJobs = filterJobsForSession(runningJobs, sessionId);
+
+  if (sessionJobs.length === 0) return;
+
+  const summaries = sessionJobs.map(j => {
     const elapsed = formatElapsed(j.started_at);
     const model = j.model || 'default';
     return `${j.id} (${j.source}/${model}, ${elapsed})`;
@@ -43,7 +60,7 @@ function main() {
 
   const additionalContext = [
     '<claude-rescue-running-jobs>',
-    `claude-rescue has ${runningJobs.length} job(s) running: ${summaries.join(', ')}.`,
+    `claude-rescue has ${sessionJobs.length} job(s) running for this session: ${summaries.join(', ')}.`,
     'Check status: node scripts/claude-companion.mjs status',
     'Get result: node scripts/claude-companion.mjs result <job-id>',
     '</claude-rescue-running-jobs>',

@@ -1,5 +1,5 @@
 // lib/state.mjs — state directory layout for claude-rescue jobs
-import { mkdirSync, existsSync, readdirSync, readFileSync, writeFileSync } from 'fs';
+import { mkdirSync, existsSync, readdirSync, readFileSync, writeFileSync, renameSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { randomBytes } from 'crypto';
@@ -59,6 +59,41 @@ export function listRunningJobs() {
 
 export function hooksStateFile() {
   return join(stateRoot(), 'hooks_state.json');
+}
+
+// Plugin config state file (stopReviewGate toggle, etc.)
+export function pluginConfigFile() {
+  return join(stateRoot(), 'state.json');
+}
+
+export function loadPluginConfig() {
+  const f = pluginConfigFile();
+  if (!existsSync(f)) return { config: { stopReviewGate: true } };
+  try {
+    return JSON.parse(readFileSync(f, 'utf8')) || { config: { stopReviewGate: true } };
+  } catch {
+    return { config: { stopReviewGate: true } };
+  }
+}
+
+export function savePluginConfig(config) {
+  const f = pluginConfigFile();
+  const tmp = join(stateRoot(), `state.tmp.${process.pid}.${randomBytes(4).toString('hex')}.json`);
+  mkdirSync(stateRoot(), { recursive: true });
+  writeFileSync(tmp, JSON.stringify(config, null, 2), 'utf8');
+  renameSync(tmp, f);
+}
+
+export function getConfig() {
+  const state = loadPluginConfig();
+  return state.config || { stopReviewGate: true };
+}
+
+export function setConfig(key, value) {
+  const state = loadPluginConfig();
+  if (!state.config) state.config = { stopReviewGate: true };
+  state.config[key] = value;
+  savePluginConfig(state);
 }
 
 export function loadHooksState() {

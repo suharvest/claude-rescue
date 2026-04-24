@@ -6,7 +6,8 @@ import { fileURLToPath } from 'url';
 import { spawnClaude } from './lib/claude.mjs';
 import { startJob, getJob, listJobs, cancelJob, runTaskWorker, listRunningJobs } from './lib/job-control.mjs';
 import { loadSources } from './lib/sources.mjs';
-import { jobDir } from './lib/state.mjs';
+import { jobDir, getConfig, setConfig } from './lib/state.mjs';
+import { SESSION_ID_ENV } from './lib/tracked-jobs.mjs';
 import { createRenderer } from './lib/render.mjs';
 
 const __dir = dirname(fileURLToPath(import.meta.url));
@@ -27,6 +28,10 @@ function parseArgs(argv) {
     else if (a === '--cwd' && args[i + 1]) { result.flags.cwd = args[++i]; }
     else if (a === '--resume' && args[i + 1]) { result.flags.resume = args[++i]; }
     else if (a === '--job-id' && args[i + 1]) { result.flags.jobId = args[++i]; }
+    else if (a === '--enable') { result.flags.enable = true; }
+    else if (a === '--disable') { result.flags.disable = true; }
+    else if (a === '--toggle') { result.flags.toggle = true; }
+    else if (a === '--status') { result.flags.status = true; }
     else if (!a.startsWith('--')) { result.positional.push(a); }
   }
   return result;
@@ -56,12 +61,16 @@ async function cmdTask(parsed) {
   const prompt = parsed.positional[0];
   if (!prompt) { console.error('Usage: task "<prompt>" [--source <name>] [--model <model>] [--cwd <dir>] [--background] [--raw]'); process.exit(1); }
 
+  // Read CLAUDE_RESCUE_SESSION_ID from environment if set (propagated via CLAUDE_ENV_FILE by session-lifecycle-hook)
+  const sessionId = process.env[SESSION_ID_ENV] || null;
+
   const opts = {
     prompt,
     source: parsed.flags.source,
     model: parsed.flags.model,
     cwd: parsed.flags.cwd,
     resume: parsed.flags.resume,
+    sessionId, // Pass to startJob if provided
   };
 
   if (parsed.flags.background) {
@@ -73,17 +82,19 @@ async function cmdTask(parsed) {
   }
 
   // Foreground: stream through renderer (unless --raw)
-  let sessionId = null;
+  // Note: rendererSessionId is the session ID from the child claude process output,
+  // separate from the parent sessionId (CLAUDE_RESCUE_SESSION_ID env var) passed to startJob.
+  let rendererSessionId = null;
   const renderer = createRenderer({
     raw: parsed.flags.raw,
-    onSessionId: (id) => { sessionId = id; },
+    onSessionId: (id) => { rendererSessionId = id; },
   });
   renderer.pipe(process.stdout);
 
   const code = await spawnClaude({ ...opts, stdout: renderer, stderr: process.stderr });
 
-  if (sessionId) {
-    console.log(`[claude-rescue] session-id: ${sessionId}`);
+  if (rendererSessionId) {
+    console.log(`[claude-rescue] session-id: ${rendererSessionId}`);
   }
   process.exit(code);
 }
@@ -141,6 +152,32 @@ async function cmdCancel(parsed) {
   console.log(`[claude-rescue] Cancelled job ${jobId} (pid ${meta.pid})`);
 }
 
+async function cmdSetup(parsed) {
+  const config = getConfig();
+
+  if (parsed.flags.status || (!parsed.flags.enable && !parsed.flags.disable && !parsed.flags.toggle)) {
+    console.log(`stopReviewGate: ${config.stopReviewGate ? 'enabled' : 'disabled'}`);
+    console.log('');
+    console.log('When enabled, Stop events are blocked if jobs are running for this session.');
+    console.log('When disabled, Stop events always proceed without blocking.');
+  } else if (parsed.flags.enable) {
+    setConfig('stopReviewGate', true);
+    console.log('[claude-rescue] Enabled stop-review-gate.');
+    console.log('Stop events will be blocked if jobs are running for this session.');
+  } else if (parsed.flags.disable) {
+    setConfig('stopReviewGate', false);
+    console.log('[claude-rescue] Disabled stop-review-gate.');
+    console.log('Stop events will always proceed without blocking.');
+  } else if (parsed.flags.toggle) {
+    const newValue = !config.stopReviewGate;
+    setConfig('stopReviewGate', newValue);
+    console.log(`[claude-rescue] Toggled stop-review-gate to ${newValue ? 'enabled' : 'disabled'}.`);
+  } else {
+    console.error(`Usage: setup [--enable|--disable|--toggle|--status]`);
+    process.exit(1);
+  }
+}
+
 async function main() {
   const parsed = parseArgs(process.argv);
   try {
@@ -150,10 +187,11 @@ async function main() {
       case 'status':       await cmdStatus(parsed); break;
       case 'result':       await cmdResult(parsed); break;
       case 'cancel':       await cmdCancel(parsed); break;
+      case 'setup':        await cmdSetup(parsed); break;
       case 'list-sources': await cmdListSources(parsed); break;
       default:
         console.error(`Unknown command: ${parsed.cmd}`);
-        console.error('Commands: task, task-worker, status, result, cancel, list-sources');
+        console.error('Commands: task, task-worker, status, result, cancel, setup, list-sources');
         process.exit(1);
     }
   } catch (err) {

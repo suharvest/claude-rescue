@@ -4,6 +4,7 @@ import { join } from 'path';
 import { spawn } from 'child_process';
 import { newJobId, ensureJobDir, jobDir, stateRoot, readJobMeta, listRunningJobs, listAllJobs, sortJobsNewestFirst } from './state.mjs';
 import { resolveSource, resolveEnv, assertDepthOk, currentDepth } from './sources.mjs';
+import { trackJob } from './tracked-jobs.mjs';
 
 function writeMeta(dir, data) {
   writeFileSync(join(dir, 'meta.json'), JSON.stringify(data, null, 2));
@@ -54,7 +55,7 @@ export function cancelJob(jobId) {
 // Double-fork pattern: parent (this process) spawns a task-worker that spawns claude.
 // The parent returns immediately; the worker stays detached and manages claude.
 export async function startJob(opts) {
-  // opts: { prompt, source, model, cwd, resume }
+  // opts: { prompt, source, model, cwd, resume, sessionId }
   assertDepthOk();
   const jobId = newJobId();
   const dir = ensureJobDir(jobId);
@@ -79,9 +80,14 @@ export async function startJob(opts) {
     status: 'running',
     exit_code: null,
     ended_at: null,
-    session_id: null,
+    session_id: opts.sessionId || null,
   };
   writeMeta(dir, meta);
+
+  // Track job under session if sessionId provided
+  if (opts.sessionId) {
+    trackJob(opts.sessionId, jobId);
+  }
 
   // Double-fork: spawn task-worker with stdio: 'ignore', detached: true.
   // Resolve the companion script relative to this file's location so it works
