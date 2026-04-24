@@ -1,35 +1,26 @@
-// lib/sources.mjs — load sources.json and resolve @secret: placeholders
+// lib/sources.mjs — load sources.json and resolve ${ENV_VAR} placeholders from process.env
 import { readFileSync } from 'fs';
-import { join } from 'path';
-import { homedir } from 'os';
+import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { dirname } from 'path';
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const SOURCES_PATH = join(__dir, '..', 'sources.json');
 const SOURCES_EXAMPLE_PATH = join(__dir, '..', 'sources.example.json');
-const SECRETS_PATH = join(homedir(), '.claude', 'secrets.json');
 
-let _secrets = null;
-function loadSecrets() {
-  if (_secrets) return _secrets;
-  try {
-    _secrets = JSON.parse(readFileSync(SECRETS_PATH, 'utf8'));
-  } catch {
-    _secrets = {};
-  }
-  return _secrets;
-}
-
-function resolveSecretValue(placeholder) {
-  // placeholder: "@secret:KEY_NAME"
-  const key = placeholder.slice('@secret:'.length);
-  const secrets = loadSecrets();
-  const entry = secrets[key];
-  if (!entry || entry.value === undefined) {
-    throw new Error(`Missing secret: "${key}" not found in ~/.claude/secrets.json. Add it with: {"${key}": {"value": "...", "description": "..."}}`);
-  }
-  return entry.value;
+// Resolve ${VAR} placeholders against process.env.
+// Supports "${VAR}" (whole value) or embedded "prefix-${VAR}-suffix".
+function resolvePlaceholders(value, seenVars) {
+  return value.replace(/\$\{([A-Z_][A-Z0-9_]*)\}/gi, (_, name) => {
+    seenVars.add(name);
+    const v = process.env[name];
+    if (v === undefined || v === '') {
+      throw new Error(
+        `Env var "${name}" is not set. claude-rescue does not read secret stores directly — ` +
+        `export it in your shell, or inject via direnv / 1Password CLI / pass / your own wrapper before invoking.`,
+      );
+    }
+    return v;
+  });
 }
 
 export function loadSources() {
@@ -37,7 +28,9 @@ export function loadSources() {
     return JSON.parse(readFileSync(SOURCES_PATH, 'utf8'));
   } catch (e) {
     if (e.code === 'ENOENT') {
-      throw new Error(`sources.json not found at ${SOURCES_PATH}. Copy sources.example.json to sources.json and edit it:\n  cp ${SOURCES_EXAMPLE_PATH} ${SOURCES_PATH}`);
+      throw new Error(
+        `sources.json not found at ${SOURCES_PATH}. Copy the template and edit it:\n  cp ${SOURCES_EXAMPLE_PATH} ${SOURCES_PATH}`,
+      );
     }
     throw e;
   }
@@ -55,19 +48,16 @@ export function resolveSource(name) {
 }
 
 export function resolveEnv(source) {
-  // Strip all ANTHROPIC_* vars from parent env first
+  // Strip all ANTHROPIC_* from parent env so the subprocess doesn't inherit
+  // the main thread's subscription token.
   const env = { ...process.env };
   for (const k of Object.keys(env)) {
     if (k.startsWith('ANTHROPIC_')) delete env[k];
   }
 
-  // Overlay source env, resolving @secret: placeholders
+  const seenVars = new Set();
   for (const [k, v] of Object.entries(source.env || {})) {
-    if (typeof v === 'string' && v.startsWith('@secret:')) {
-      env[k] = resolveSecretValue(v); // throws with clear message if missing
-    } else {
-      env[k] = v;
-    }
+    env[k] = typeof v === 'string' ? resolvePlaceholders(v, seenVars) : v;
   }
   return env;
 }

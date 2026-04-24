@@ -56,18 +56,26 @@ Each source is an (env + model) combo pointing at any **Anthropic-compatible** e
 }
 ```
 
-### 3. Add secrets
+### 3. Provide env vars
 
-`@secret:NAME` placeholders are resolved from `~/.claude/secrets.json`:
+`${VAR}` placeholders are resolved from the companion's own `process.env` at invocation time. **claude-rescue does not read any secret store directly** — pick whatever workflow you prefer:
 
-```json
-{
-  "ANTHROPIC_PAYG":  { "value": "sk-ant-...",    "description": "Anthropic pay-as-you-go" },
-  "DEEPSEEK_KEY":    { "value": "sk-...",        "description": "DeepSeek API" }
-}
+```bash
+# plain shell
+export ANTHROPIC_API_KEY=sk-ant-...
+export DEEPSEEK_KEY=sk-...
+claude                                      # all downstream dispatches inherit these
+
+# direnv / .envrc
+echo 'export DEEPSEEK_KEY=sk-...' >> ~/project/my-repo/.envrc && direnv allow
+
+# 1Password CLI
+op run --env-file=.env.1p -- claude
+
+# pass / bitwarden / vault / age — wrap however you like
 ```
 
-Keep `secrets.json` at `chmod 600`. The companion only reads the specific key it needs, never logs values.
+If a required env var is missing, the companion fails with a clear `Env var "X" is not set` message instead of silently hitting a 401.
 
 ### 4. Dispatch
 

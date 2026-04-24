@@ -2,17 +2,25 @@
   "default": "anthropic-payg",
   "sources": {
     "anthropic-payg": {
-      "description": "Anthropic pay-as-you-go API (saves subscription quota)",
+      "description": "Anthropic pay-as-you-go API",
       "env": {
-        "ANTHROPIC_API_KEY": "@secret:ANTHROPIC_API_KEY_PAYG"
+        "ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY}"
       },
       "model": "claude-sonnet-4-6"
     },
+    "deepseek-pro": {
+      "description": "DeepSeek V4 Pro (official Anthropic-compatible endpoint)",
+      "env": {
+        "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic",
+        "ANTHROPIC_AUTH_TOKEN": "${DEEPSEEK_API_KEY}"
+      },
+      "model": "deepseek-v4-pro"
+    },
     "example-third-party": {
-      "description": "Template: any Anthropic-compatible endpoint (GLM, DeepSeek, Kimi, DashScope, etc.)",
+      "description": "Template: any Anthropic-compatible endpoint. Edit to taste.",
       "env": {
         "ANTHROPIC_BASE_URL": "https://example.com/anthropic",
-        "ANTHROPIC_AUTH_TOKEN": "@secret:EXAMPLE_KEY"
+        "ANTHROPIC_AUTH_TOKEN": "${EXAMPLE_API_KEY}"
       },
       "model": "model-name-here"
     }
