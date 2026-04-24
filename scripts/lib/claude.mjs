@@ -1,6 +1,6 @@
 // lib/claude.mjs — spawn claude CLI with resolved source environment
 import { spawn } from 'child_process';
-import { resolveSource, resolveEnv } from './sources.mjs';
+import { resolveSource, resolveEnv, assertDepthOk } from './sources.mjs';
 
 // Verified flags from `claude --help`:
 //   -p / --print           non-interactive mode
@@ -11,6 +11,7 @@ import { resolveSource, resolveEnv } from './sources.mjs';
 
 export function spawnClaude(opts) {
   // opts: { prompt, source, model, cwd, stdout, stderr }
+  assertDepthOk();
   const source = resolveSource(opts.source);
   const env = resolveEnv(source);
   const model = opts.model || source.model;

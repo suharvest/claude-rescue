@@ -7,6 +7,23 @@ const __dir = dirname(fileURLToPath(import.meta.url));
 const SOURCES_PATH = join(__dir, '..', 'sources.json');
 const SOURCES_EXAMPLE_PATH = join(__dir, '..', 'sources.example.json');
 
+const MAX_DEPTH = parseInt(process.env.CLAUDE_RESCUE_MAX_DEPTH || '3', 10);
+
+export function currentDepth() {
+  return parseInt(process.env.CLAUDE_RESCUE_DEPTH || '0', 10);
+}
+
+export function assertDepthOk() {
+  const d = currentDepth();
+  if (d >= MAX_DEPTH) {
+    throw new Error(
+      `claude-rescue nesting depth ${d} has reached the limit of ${MAX_DEPTH}. ` +
+      `Refusing to spawn another level to avoid runaway cost. ` +
+      `Override with CLAUDE_RESCUE_MAX_DEPTH=<n> if you know what you're doing.`,
+    );
+  }
+}
+
 // Resolve ${VAR} placeholders against process.env.
 // Supports "${VAR}" (whole value) or embedded "prefix-${VAR}-suffix".
 function resolvePlaceholders(value, seenVars) {
@@ -59,5 +76,8 @@ export function resolveEnv(source) {
   for (const [k, v] of Object.entries(source.env || {})) {
     env[k] = typeof v === 'string' ? resolvePlaceholders(v, seenVars) : v;
   }
+
+  // Propagate nesting depth to the child so it can enforce the same cap.
+  env.CLAUDE_RESCUE_DEPTH = String(currentDepth() + 1);
   return env;
 }

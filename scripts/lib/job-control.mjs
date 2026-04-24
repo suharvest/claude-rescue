@@ -3,7 +3,7 @@ import { writeFileSync, readFileSync, readdirSync, createWriteStream, existsSync
 import { join } from 'path';
 import { spawn } from 'child_process';
 import { newJobId, ensureJobDir, jobDir, stateRoot } from './state.mjs';
-import { resolveSource, resolveEnv } from './sources.mjs';
+import { resolveSource, resolveEnv, assertDepthOk, currentDepth } from './sources.mjs';
 
 function writeMeta(dir, data) {
   writeFileSync(join(dir, 'meta.json'), JSON.stringify(data, null, 2));
@@ -26,12 +26,14 @@ export function listJobs(n = 10) {
 
 export async function startJob(opts) {
   // opts: { prompt, source, model, cwd }
+  assertDepthOk();
   const jobId = newJobId();
   const dir = ensureJobDir(jobId);
 
   const source = resolveSource(opts.source);
   const env = resolveEnv(source);
   const model = opts.model || source.model;
+  const depth = currentDepth() + 1;
 
   writeFileSync(join(dir, 'prompt.txt'), opts.prompt);
 
@@ -51,6 +53,7 @@ export async function startJob(opts) {
     jobId,
     source: source.name,
     model,
+    depth,
     cwd: opts.cwd || process.cwd(),
     prompt_preview: opts.prompt.slice(0, 120),
     started_at: new Date().toISOString(),
