@@ -1,0 +1,6 @@
+{
+  "name": "claude-rescue",
+  "version": "0.1.0",
+  "description": "Delegate long tasks to an independent Claude instance with configurable Anthropic-compatible backend",
+  "author": "harvest"
+}

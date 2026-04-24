@@ -1,0 +1,20 @@
+{
+  "default": "anthropic-payg",
+  "sources": {
+    "anthropic-payg": {
+      "description": "Anthropic pay-as-you-go API (saves subscription quota)",
+      "env": {
+        "ANTHROPIC_API_KEY": "@secret:ANTHROPIC_API_KEY_PAYG"
+      },
+      "model": "claude-sonnet-4-6"
+    },
+    "example-third-party": {
+      "description": "Template: any Anthropic-compatible endpoint (GLM, DeepSeek, Kimi, DashScope, etc.)",
+      "env": {
+        "ANTHROPIC_BASE_URL": "https://example.com/anthropic",
+        "ANTHROPIC_AUTH_TOKEN": "@secret:EXAMPLE_KEY"
+      },
+      "model": "model-name-here"
+    }
+  }
+}

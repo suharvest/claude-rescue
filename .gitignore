@@ -1,0 +1,14 @@
+# Personal source config (contains user's chosen secret names / provider list)
+scripts/sources.json
+scripts/sources.local.json
+
+# OS / editor
+.DS_Store
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# Job state & logs written by companion runtime
+jobs/
+*.log
