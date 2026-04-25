@@ -4,13 +4,11 @@ import { readFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { spawnClaude } from './lib/claude.mjs';
-import { startJob, getJob, listJobs, cancelJob, runTaskWorker, listRunningJobs } from './lib/job-control.mjs';
+import { startJob, getJob, listJobs, cancelJob, runTaskWorker } from './lib/job-control.mjs';
 import { loadSources } from './lib/sources.mjs';
 import { jobDir, getConfig, setConfig, validateJobId } from './lib/state.mjs';
 import { SESSION_ID_ENV } from './lib/tracked-jobs.mjs';
 import { createRenderer } from './lib/render.mjs';
-
-const __dir = dirname(fileURLToPath(import.meta.url));
 
 function parseArgs(argv) {
   const args = argv.slice(2);
@@ -20,7 +18,6 @@ function parseArgs(argv) {
   for (let i = 1; i < args.length; i++) {
     const a = args[i];
     if (a === '--background') { result.flags.background = true; }
-    else if (a === '--wait') { result.flags.wait = true; }
     else if (a === '--raw') { result.flags.raw = true; }
     else if (a === '--json') { result.flags.json = true; }
     else if (a === '--source' && args[i + 1]) { result.flags.source = args[++i]; }

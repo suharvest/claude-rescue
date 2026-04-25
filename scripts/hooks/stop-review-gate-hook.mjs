@@ -3,19 +3,19 @@
 // Session-scoped: only considers jobs tracked for the current session_id
 // Respects config.stopReviewGate: if false, always allows stop
 import fs from 'fs';
-import path from 'path';
 import process from 'process';
-import { fileURLToPath } from 'url';
 
 import { listRunningJobs, reapOrphanedJobs, getConfig } from '../lib/state.mjs';
 import { listTrackedJobIds, SESSION_ID_ENV } from '../lib/tracked-jobs.mjs';
 
-const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
-
 function readHookInput() {
-  const raw = fs.readFileSync(0, 'utf8').trim();
-  if (!raw) return {};
-  return JSON.parse(raw);
+  try {
+    const raw = fs.readFileSync(0, 'utf8').trim();
+    if (!raw) return {};
+    return JSON.parse(raw);
+  } catch {
+    return {};
+  }
 }
 
 function emitDecision(payload) {
@@ -100,10 +100,4 @@ function main() {
   });
 }
 
-try {
-  main();
-} catch (error) {
-  const message = error instanceof Error ? error.message : String(error);
-  process.stderr.write(`${message}\n`);
-  process.exitCode = 1;
-}
+main();

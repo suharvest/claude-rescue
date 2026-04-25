@@ -3,7 +3,6 @@
 // Session-scoped: only surfaces jobs tracked for the current session_id
 import fs from 'fs';
 import process from 'process';
-import { fileURLToPath } from 'url';
 
 import { listRunningJobs } from '../lib/state.mjs';
 import { listTrackedJobIds, SESSION_ID_ENV } from '../lib/tracked-jobs.mjs';

@@ -3,7 +3,6 @@
 // Format: { "<sessionId>": ["jobId1", "jobId2", ...] }
 import { mkdirSync, existsSync, readFileSync, writeFileSync, renameSync, openSync, closeSync, unlinkSync, statSync } from 'fs';
 import { join } from 'path';
-import { homedir } from 'os';
 import { randomBytes } from 'crypto';
 import { stateRoot, readJobMeta, validateSessionId, validateJobId } from './state.mjs';
 

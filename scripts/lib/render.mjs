@@ -6,6 +6,19 @@ const RED = '\x1b[31m';
 const YELLOW = '\x1b[33m';
 const RESET = '\x1b[0m';
 
+// Strip dangerous terminal control sequences while preserving useful CSI colors.
+// Removes: C0 controls (except \n\t\r and ESC), OSC sequences (x1b]...x07 or x1b]...x1b\x)
+// Keeps: CSI color sequences (x1b[...m) intact.
+function sanitizeForTerminal(s) {
+  if (!s) return s;
+  // Strip OSC sequences: ESC ] ... (BEL or ESC \)
+  let result = s.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '');
+  // Strip C0 controls except newline (0x0a), tab (0x09), CR (0x0d), ESC (0x1b)
+  // Range: 0x00-0x08, 0x0b-0x0c, 0x0e-0x1a, 0x1c-0x1f, 0x7f
+  result = result.replace(/[\x00-\x08\x0b\x0c\x0e-\x1a\x1c-\x1f\x7f]/g, '');
+  return result;
+}
+
 function previewInput(input) {
   if (!input) return '';
   const str = typeof input === 'string' ? input : JSON.stringify(input);
@@ -24,10 +37,10 @@ function renderLine(line, opts) {
     if (type === 'assistant' && event.message?.content) {
       for (const block of event.message.content) {
         if (block.type === 'text') {
-          out += block.text || '';
+          out += sanitizeForTerminal(block.text || '');
         } else if (block.type === 'tool_use') {
           const name = block.name || 'unknown';
-          const preview = previewInput(block.input);
+          const preview = sanitizeForTerminal(previewInput(block.input));
           if (useColor) {
             out += `${GREY}→ ${name}(${preview})${RESET}\n`;
           } else {
@@ -60,11 +73,15 @@ function renderLine(line, opts) {
   return out;
 }
 
+// Export sanitizeForTerminal for testing / direct use
+export { sanitizeForTerminal };
+
 export function createRenderer(opts = {}) {
   const options = {
     raw: opts.raw ?? false,
     color: opts.color ?? true,
     onSessionId: opts.onSessionId ?? null,
+    sanitize: opts.sanitize ?? true, // Default: sanitize output
   };
 
   if (options.raw) {

@@ -1,8 +1,8 @@
 // lib/job-control.mjs — background job lifecycle management
-import { writeFileSync, readFileSync, readdirSync, existsSync, openSync, closeSync, statSync } from 'fs';
+import { writeFileSync, readFileSync, openSync, closeSync } from 'fs';
 import { join } from 'path';
 import { spawn } from 'child_process';
-import { newJobId, ensureJobDir, jobDir, stateRoot, readJobMeta, writeJobMeta, listRunningJobs, listAllJobs, sortJobsNewestFirst, validateJobId } from './state.mjs';
+import { newJobId, ensureJobDir, jobDir, readJobMeta, writeJobMeta, listRunningJobs, listAllJobs, sortJobsNewestFirst, validateJobId } from './state.mjs';
 import { resolveSource, resolveEnv, assertDepthOk, currentDepth } from './sources.mjs';
 import { trackJob } from './tracked-jobs.mjs';
 
