@@ -1,7 +1,7 @@
 // lib/tracked-jobs.mjs — per-session job tracking for claude-rescue
 // Stores mapping in ~/.claude/plugins/data/claude-rescue/tracked-jobs.json
 // Format: { "<sessionId>": ["jobId1", "jobId2", ...] }
-import { mkdirSync, existsSync, readFileSync, writeFileSync, renameSync, openSync, closeSync, unlinkSync, statSync } from 'fs';
+import { mkdirSync, existsSync, readFileSync, writeFileSync, renameSync, openSync, closeSync, writeSync, unlinkSync, statSync } from 'fs';
 import { join } from 'path';
 import { randomBytes } from 'crypto';
 import { stateRoot, readJobMeta, validateSessionId, validateJobId } from './state.mjs';
@@ -16,23 +16,42 @@ function lockFile() {
   return join(stateRoot(), 'tracked-jobs.lock');
 }
 
-// Simple file-lock retry loop using exclusive create
+// Detect a stale lock by inspecting the holder pid (and mtime as fallback).
+// Returns true if the lock was removed.
+function tryRemoveStaleLock(lock) {
+  try {
+    const raw = readFileSync(lock, 'utf8').trim();
+    const pid = parseInt(raw, 10);
+    if (Number.isFinite(pid) && pid > 0) {
+      try {
+        process.kill(pid, 0); // probe; throws ESRCH if dead, EPERM if alive but not ours
+      } catch (err) {
+        if (err.code === 'ESRCH') {
+          unlinkSync(lock);
+          return true;
+        }
+      }
+    }
+    // Fallback: age-based eviction (e.g. lock file with no pid, or alien holder)
+    const st = statSync(lock);
+    if (Date.now() - st.mtimeMs > 30_000) {
+      unlinkSync(lock);
+      return true;
+    }
+  } catch {}
+  return false;
+}
+
 function withLock(fn) {
   const lock = lockFile();
-  for (let i = 0; i < 100; i++) {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
     let fd;
     try {
       fd = openSync(lock, 'wx'); // exclusive create
     } catch (e) {
       if (e.code === 'EEXIST') {
-        // Check stale: if older than 30s, force-remove
-        try {
-          const st = statSync(lock);
-          if (Date.now() - st.mtimeMs > 30_000) {
-            unlinkSync(lock);
-          }
-        } catch {}
-        // Brief sleep (20-50ms)
+        if (tryRemoveStaleLock(lock)) continue;
         const end = Date.now() + 20 + Math.floor(Math.random() * 30);
         while (Date.now() < end) {}
         continue;
@@ -40,6 +59,7 @@ function withLock(fn) {
       throw e;
     }
     try {
+      writeSync(fd, String(process.pid));
       return fn();
     } finally {
       closeSync(fd);
