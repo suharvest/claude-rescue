@@ -7,7 +7,7 @@ const __dir = dirname(fileURLToPath(import.meta.url));
 const SOURCES_PATH = join(__dir, '..', 'sources.json');
 const SOURCES_EXAMPLE_PATH = join(__dir, '..', 'sources.example.json');
 
-const MAX_DEPTH = parseInt(process.env.CLAUDE_RESCUE_MAX_DEPTH || '3', 10);
+const MAX_DEPTH = parseInt(process.env.CLAUDE_RESCUE_MAX_DEPTH || '1', 10);
 
 export function currentDepth() {
   return parseInt(process.env.CLAUDE_RESCUE_DEPTH || '0', 10);

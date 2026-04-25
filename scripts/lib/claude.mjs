@@ -10,7 +10,7 @@ import { resolveSource, resolveEnv, assertDepthOk } from './sources.mjs';
 //   --verbose              override verbose mode
 
 export function spawnClaude(opts) {
-  // opts: { prompt, source, model, cwd, stdout, stderr }
+  // opts: { prompt, source, model, cwd, stdout, stderr, resume }
   assertDepthOk();
   const source = resolveSource(opts.source);
   const env = resolveEnv(source);
@@ -23,6 +23,7 @@ export function spawnClaude(opts) {
     '--verbose',
   ];
   if (model) args.push('--model', model);
+  if (opts.resume) args.push('--resume', opts.resume);
   // prompt is last positional arg
   args.push(opts.prompt);
 

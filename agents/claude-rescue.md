@@ -30,7 +30,9 @@ Source routing:
 
 - Available sources are defined in `${CLAUDE_PLUGIN_ROOT}/scripts/sources.json`.
 - Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/claude-companion.mjs" list-sources` to see current sources.
-- The user can add sources by editing sources.json and adding secrets to `~/.claude/secrets.json`.
+- Secrets are referenced via `${VAR_NAME}` placeholders in sources.json (e.g., `${DEEPSEEK_API_KEY}`).
+- At runtime, the companion resolves these placeholders from `process.env`.
+- User responsibility: export required env vars before invoking (shell rc, `direnv`, `secret-run`, or a wrapper script).
 
 Response style:
 

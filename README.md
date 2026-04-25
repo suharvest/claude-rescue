@@ -174,7 +174,17 @@ main Claude Code (your subscription, native)
 
 ## Status
 
-**MVP.** End-to-end working. Intentionally minimal — no hooks, no slash commands, no review/adversarial modes. See [GAPS.md](GAPS.md) for the roadmap and feature gap vs. the reference `codex-rescue` / `opencode-rescue` plugins.
+**MVP → v1.0.** End-to-end working with full lifecycle support: background jobs, cancel, per-session tracking, hooks, and slash commands. See [GAPS.md](GAPS.md) for remaining roadmap items vs. the reference plugins.
+
+### What ships now
+
+- **Hooks**: Stop, PostToolUse, SessionStart, SessionEnd (full lifecycle integration)
+- **Slash commands**: `/rescue`, `/rescue-status`, `/rescue-result`, `/rescue-cancel`, `/rescue-setup`
+- **Background jobs**: Fire-and-return with job tracking; cancel via PID or slash command
+- **Foreground mode**: Stream-json renderer with pretty output
+- **`--resume` passthrough**: Chain follow-up prompts to previous session
+- **Per-session job tracking**: Automatic cleanup on SessionEnd
+- **Multi-backend routing**: GLM-5, Qwen, DeepSeek, Kimi, MiniMax, pay-as-you-go Claude, any Anthropic-compatible endpoint
 
 ## Acknowledgements
 
