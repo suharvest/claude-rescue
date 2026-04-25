@@ -6,7 +6,7 @@ import { fileURLToPath } from 'url';
 import { spawnClaude } from './lib/claude.mjs';
 import { startJob, getJob, listJobs, cancelJob, runTaskWorker, listRunningJobs } from './lib/job-control.mjs';
 import { loadSources } from './lib/sources.mjs';
-import { jobDir, getConfig, setConfig } from './lib/state.mjs';
+import { jobDir, getConfig, setConfig, validateJobId } from './lib/state.mjs';
 import { SESSION_ID_ENV } from './lib/tracked-jobs.mjs';
 import { createRenderer } from './lib/render.mjs';
 
@@ -111,6 +111,7 @@ async function cmdTaskWorker(parsed) {
 async function cmdStatus(parsed) {
   const jobId = parsed.positional[0];
   if (jobId) {
+    validateJobId(jobId);
     const meta = getJob(jobId);
     if (parsed.flags.json) {
       console.log(JSON.stringify(meta, null, 2));
@@ -140,6 +141,7 @@ async function cmdStatus(parsed) {
 async function cmdResult(parsed) {
   const jobId = parsed.positional[0];
   if (!jobId) { console.error('Usage: result <job-id>'); process.exit(1); }
+  validateJobId(jobId);
   const logPath = join(jobDir(jobId), 'stdout.log');
   if (!existsSync(logPath)) { console.error(`No stdout.log found for job: ${jobId}`); process.exit(1); }
   process.stdout.write(readFileSync(logPath));
@@ -148,6 +150,7 @@ async function cmdResult(parsed) {
 async function cmdCancel(parsed) {
   const jobId = parsed.positional[0];
   if (!jobId) { console.error('Usage: cancel <job-id>'); process.exit(1); }
+  validateJobId(jobId);
   const meta = cancelJob(jobId);
   console.log(`[claude-rescue] Cancelled job ${jobId} (pid ${meta.pid})`);
 }

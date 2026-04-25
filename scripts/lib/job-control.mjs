@@ -2,15 +2,12 @@
 import { writeFileSync, readFileSync, readdirSync, existsSync, openSync, closeSync, statSync } from 'fs';
 import { join } from 'path';
 import { spawn } from 'child_process';
-import { newJobId, ensureJobDir, jobDir, stateRoot, readJobMeta, listRunningJobs, listAllJobs, sortJobsNewestFirst } from './state.mjs';
+import { newJobId, ensureJobDir, jobDir, stateRoot, readJobMeta, writeJobMeta, listRunningJobs, listAllJobs, sortJobsNewestFirst, validateJobId } from './state.mjs';
 import { resolveSource, resolveEnv, assertDepthOk, currentDepth } from './sources.mjs';
 import { trackJob } from './tracked-jobs.mjs';
 
-function writeMeta(dir, data) {
-  writeFileSync(join(dir, 'meta.json'), JSON.stringify(data, null, 2));
-}
-
 export function getJob(jobId) {
+  validateJobId(jobId);
   return readJobMeta(jobId);
 }
 
@@ -25,31 +22,43 @@ export function listJobs(n = 10) {
 
 export { listRunningJobs, listAllJobs, sortJobsNewestFirst };
 
+// Cancel a job: send SIGTERM to worker, poll until status leaves running/cancelling.
+// Worker handles killing the grandchild and writing final meta.
 export function cancelJob(jobId) {
+  validateJobId(jobId);
   const meta = getJob(jobId);
   if (!meta) throw new Error(`Job not found: ${jobId}`);
   if (meta.status !== 'running') {
     throw new Error(`Job ${jobId} is not running (status: ${meta.status})`);
   }
+  if (!meta.pid) throw new Error(`Job ${jobId} has no PID recorded`);
 
-  const dir = jobDir(jobId);
+  // Send SIGTERM to the worker (worker will handle everything else)
   try {
     process.kill(meta.pid, 'SIGTERM');
   } catch (err) {
     if (err.code === 'ESRCH') {
-      meta.status = 'orphaned';
-    } else {
-      throw err;
+      // Worker already dead - mark orphaned
+      const orphanMeta = { ...meta, status: 'orphaned', ended_at: new Date().toISOString(), exit_code: meta.exit_code ?? -1 };
+      writeJobMeta(jobId, orphanMeta);
+      return orphanMeta;
     }
+    throw err;
   }
 
-  if (meta.status !== 'orphaned') {
-    meta.status = 'cancelled';
+  // Poll meta.json for up to 10s waiting for status to leave 'running'/'cancelling'
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    const current = readJobMeta(jobId);
+    if (!current || current.status !== 'running' && current.status !== 'cancelling') {
+      return current || meta;
+    }
+    // Brief sleep (20-50ms)
+    const end = Date.now() + 20 + Math.floor(Math.random() * 30);
+    while (Date.now() < end) {}
   }
-  meta.exit_code = -15;
-  meta.ended_at = new Date().toISOString();
-  writeMeta(dir, meta);
-  return meta;
+  // Timeout - return whatever we have
+  return readJobMeta(jobId) || meta;
 }
 
 // Double-fork pattern: parent (this process) spawns a task-worker that spawns claude.
@@ -82,7 +91,7 @@ export async function startJob(opts) {
     ended_at: null,
     session_id: opts.sessionId || null,
   };
-  writeMeta(dir, meta);
+  writeJobMeta(jobId, meta);
 
   // Track job under session if sessionId provided
   if (opts.sessionId) {
@@ -111,13 +120,14 @@ export async function startJob(opts) {
 
   // Update meta with worker pid
   meta.pid = worker.pid;
-  writeMeta(dir, meta);
+  writeJobMeta(jobId, meta);
 
   return jobId;
 }
 
 // Run task-worker: spawned by startJob to actually run claude
 export async function runTaskWorker(jobId) {
+  validateJobId(jobId);
   const dir = jobDir(jobId);
   const meta = readJobMeta(jobId);
   if (!meta) throw new Error(`Job not found: ${jobId}`);
@@ -142,32 +152,52 @@ export async function runTaskWorker(jobId) {
   const prompt = readFileSync(join(dir, 'prompt.txt'), 'utf8');
   args.push(prompt);
 
-  // Spawn claude grandchild
+  // Spawn claude grandchild with detached: true so it gets its own process group
   const claude = spawn('claude', args, {
     env,
     cwd: meta.cwd || process.cwd(),
     stdio: ['ignore', stdoutFd, stderrFd],
-    detached: false, // Not detached - we want to wait for it
+    detached: true, // Grandchild gets own process group (pgid == pid)
   });
 
-  // SIGTERM handler: propagate to claude, update status
+  // Track whether we're in cancelling state
+  let cancelling = false;
+  let killTimer = null;
+
+  // SIGTERM handler: worker-owned cancel
   const onSigterm = () => {
+    // 1. Write meta.status = 'cancelling' (atomic write)
+    cancelling = true;
+    const cancellingMeta = { ...meta, status: 'cancelling' };
+    writeJobMeta(jobId, cancellingMeta);
+
+    // 2. Send SIGTERM to grandchild's process group
     try {
-      claude.kill('SIGTERM');
-    } catch {}
-    meta.status = 'cancelled';
-    meta.exit_code = -15;
-    meta.ended_at = new Date().toISOString();
-    writeMeta(dir, meta);
-    closeSync(stdoutFd);
-    closeSync(stderrFd);
-    process.exit(0);
+      process.kill(-claude.pid, 'SIGTERM');
+    } catch (e) {
+      // Process may already be dead
+    }
+
+    // 3. Set 5-second timer: if still alive, SIGKILL
+    killTimer = setTimeout(() => {
+      try {
+        process.kill(-claude.pid, 'SIGKILL');
+      } catch (e) {
+        // Process may already be dead
+      }
+    }, 5000);
+
+    // 4. Do NOT call process.exit - let child close handler run
   };
   process.on('SIGTERM', onSigterm);
 
-  // Wait for claude to exit
+  // Wait for claude to exit - this handler writes final meta (terminal status)
   claude.on('close', (code) => {
+    // Clear kill timer if set
+    if (killTimer) clearTimeout(killTimer);
+
     // Scan first ~4KB of stdout.log for session_id
+    let capturedSessionId = null;
     try {
       const logData = readFileSync(join(dir, 'stdout.log'), 'utf8');
       const firstChunk = logData.slice(0, 4096);
@@ -176,29 +206,41 @@ export async function runTaskWorker(jobId) {
         try {
           const event = JSON.parse(line);
           if (event.session_id) {
-            meta.session_id = event.session_id;
+            capturedSessionId = event.session_id;
             break;
           }
         } catch {}
       }
     } catch {}
 
-    meta.status = code === 0 ? 'done' : 'failed';
-    meta.exit_code = code ?? -1;
-    meta.ended_at = new Date().toISOString();
-    writeMeta(dir, meta);
+    // Final meta write - EXACTLY ONCE
+    const finalMeta = {
+      ...meta,
+      session_id: capturedSessionId || meta.session_id,
+      // If we were cancelling and got here, mark cancelled
+      status: cancelling ? 'cancelled' : (code === 0 ? 'done' : 'failed'),
+      exit_code: cancelling ? -15 : (code ?? -1),
+      ended_at: new Date().toISOString(),
+    };
+    writeJobMeta(jobId, finalMeta);
 
     closeSync(stdoutFd);
     closeSync(stderrFd);
-    process.exit(code ?? 0);
+    process.exit(finalMeta.exit_code);
   });
 
   claude.on('error', (err) => {
-    meta.status = 'failed';
-    meta.exit_code = -1;
-    meta.error_message = err.message;
-    meta.ended_at = new Date().toISOString();
-    writeMeta(dir, meta);
+    // Clear kill timer if set
+    if (killTimer) clearTimeout(killTimer);
+
+    const errorMeta = {
+      ...meta,
+      status: 'failed',
+      exit_code: -1,
+      error_message: err.message,
+      ended_at: new Date().toISOString(),
+    };
+    writeJobMeta(jobId, errorMeta);
     closeSync(stdoutFd);
     closeSync(stderrFd);
     process.exit(1);

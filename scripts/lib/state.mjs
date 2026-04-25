@@ -1,14 +1,39 @@
 // lib/state.mjs — state directory layout for claude-rescue jobs
-import { mkdirSync, existsSync, readdirSync, readFileSync, writeFileSync, renameSync } from 'fs';
+import { mkdirSync, existsSync, readdirSync, readFileSync, writeFileSync, renameSync, openSync, closeSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { randomBytes } from 'crypto';
+
+// Job ID format: YYYYMMDD-HHMMSS-hex (8 digits - 6 digits - 6 hex chars)
+const JOB_ID_REGEX = /^[0-9]{8}-[0-9]{6}-[0-9a-f]{6}$/;
+
+// Session ID: alphanumeric + underscore/dash, max 128 chars
+const SESSION_ID_REGEX = /^[A-Za-z0-9_-]{1,128}$/;
+
+export function validateJobId(jobId) {
+  if (!jobId || typeof jobId !== 'string') {
+    throw new Error(`Invalid jobId: missing or not a string`);
+  }
+  if (!JOB_ID_REGEX.test(jobId)) {
+    throw new Error(`Invalid jobId: "${jobId}" does not match expected format YYYYMMDD-HHMMSS-hex`);
+  }
+}
+
+export function validateSessionId(sessionId) {
+  if (!sessionId || typeof sessionId !== 'string') {
+    throw new Error(`Invalid sessionId: missing or not a string`);
+  }
+  if (!SESSION_ID_REGEX.test(sessionId)) {
+    throw new Error(`Invalid sessionId: "${sessionId}" contains invalid characters or is too long`);
+  }
+}
 
 export function stateRoot() {
   return join(homedir(), '.claude', 'plugins', 'data', 'claude-rescue');
 }
 
 export function jobDir(jobId) {
+  validateJobId(jobId);
   return join(stateRoot(), 'jobs', jobId);
 }
 
@@ -28,15 +53,22 @@ export function ensureJobDir(jobId) {
 }
 
 export function readJobMeta(jobId) {
+  validateJobId(jobId);
   const metaPath = join(jobDir(jobId), 'meta.json');
   if (!existsSync(metaPath)) return null;
-  return JSON.parse(readFileSync(metaPath, 'utf8'));
+  try {
+    return JSON.parse(readFileSync(metaPath, 'utf8'));
+  } catch {
+    // Return null on parse failure so callers can skip malformed entries
+    return null;
+  }
 }
 
 export function listAllJobs() {
   const jobsDir = join(stateRoot(), 'jobs');
   if (!existsSync(jobsDir)) return [];
-  return readdirSync(jobsDir);
+  // Filter out invalid job IDs (directory names not matching expected format)
+  return readdirSync(jobsDir).filter(id => JOB_ID_REGEX.test(id));
 }
 
 export function sortJobsNewestFirst(jobIds) {
@@ -108,6 +140,7 @@ export function loadHooksState() {
 
 export function saveHooksState(state) {
   const f = hooksStateFile();
+  const tmp = join(stateRoot(), `hooks_state.tmp.${process.pid}.${randomBytes(4).toString('hex')}.json`);
   mkdirSync(stateRoot(), { recursive: true });
   const data = { announced: state.announced || {} };
   // Prune announced entries older than 24h
@@ -115,12 +148,18 @@ export function saveHooksState(state) {
   for (const k of Object.keys(data.announced)) {
     if (data.announced[k].at < cutoff) delete data.announced[k];
   }
-  writeFileSync(f, JSON.stringify(data, null, 2));
+  writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8');
+  renameSync(tmp, f);
 }
 
 // Write meta.json atomically for a specific job.
-function writeJobMeta(jobId, meta) {
-  writeFileSync(join(jobDir(jobId), 'meta.json'), JSON.stringify(meta, null, 2));
+export function writeJobMeta(jobId, meta) {
+  validateJobId(jobId);
+  const dir = jobDir(jobId);
+  const finalPath = join(dir, 'meta.json');
+  const tmp = join(dir, `meta.tmp.${process.pid}.${randomBytes(4).toString('hex')}.json`);
+  writeFileSync(tmp, JSON.stringify(meta, null, 2), 'utf8');
+  renameSync(tmp, finalPath);
 }
 
 // Scan running-status jobs, verify each PID is alive; mark dead ones as orphaned.
