@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 // claude-companion.mjs — CLI entry point for claude-rescue plugin
 import { readFileSync, existsSync } from 'fs';
-import { join, dirname } from 'path';
+import { join } from 'path';
 import { fileURLToPath } from 'url';
 import { spawnClaude } from './lib/claude.mjs';
-import { startJob, getJob, listJobs, cancelJob, runTaskWorker } from './lib/job-control.mjs';
+import { startJob, getJob, listJobs, cancelJob, runTaskWorker, waitForJob, DEFAULT_WAIT_TIMEOUT_MS } from './lib/job-control.mjs';
 import { loadSources } from './lib/sources.mjs';
 import { jobDir, getConfig, setConfig, validateJobId } from './lib/state.mjs';
 import { SESSION_ID_ENV } from './lib/tracked-jobs.mjs';
@@ -20,11 +20,14 @@ function parseArgs(argv) {
     if (a === '--background') { result.flags.background = true; }
     else if (a === '--raw') { result.flags.raw = true; }
     else if (a === '--json') { result.flags.json = true; }
+    else if (a === '--wait') { result.flags.wait = true; }
     else if (a === '--source' && args[i + 1]) { result.flags.source = args[++i]; }
     else if (a === '--model' && args[i + 1]) { result.flags.model = args[++i]; }
     else if (a === '--cwd' && args[i + 1]) { result.flags.cwd = args[++i]; }
     else if (a === '--resume' && args[i + 1]) { result.flags.resume = args[++i]; }
     else if (a === '--job-id' && args[i + 1]) { result.flags.jobId = args[++i]; }
+    else if (a === '--timeout-ms' && args[i + 1]) { result.flags.timeoutMs = parseInt(args[++i], 10); }
+    else if (a === '--poll-interval-ms' && args[i + 1]) { result.flags.pollIntervalMs = parseInt(args[++i], 10); }
     else if (a === '--enable') { result.flags.enable = true; }
     else if (a === '--disable') { result.flags.disable = true; }
     else if (a === '--toggle') { result.flags.toggle = true; }
@@ -107,8 +110,50 @@ async function cmdTaskWorker(parsed) {
 
 async function cmdStatus(parsed) {
   const jobId = parsed.positional[0];
+
+  // --wait requires a jobId
+  if (parsed.flags.wait && !jobId) {
+    console.error('status --wait requires a job id');
+    process.exit(1);
+  }
+
   if (jobId) {
     validateJobId(jobId);
+
+    // If --wait, poll until terminal state
+    if (parsed.flags.wait) {
+      const timeoutMs = parsed.flags.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS;
+      const pollIntervalMs = parsed.flags.pollIntervalMs ?? 1000;
+      const meta = await waitForJob(jobId, { timeoutMs, pollIntervalMs });
+
+      // Print final status section
+      if (parsed.flags.json) {
+        console.log(JSON.stringify(meta, null, 2));
+      } else {
+        const durationMs = meta.started_at && meta.ended_at
+          ? (new Date(meta.ended_at) - new Date(meta.started_at))
+          : null;
+        console.log(`=== Job ${jobId} finished: ${meta.status} (exit_code=${meta.exit_code ?? 'none'}) ===`);
+        console.log(`Session: ${meta.session_id || 'none'}`);
+        console.log(`Started: ${meta.started_at}  Ended: ${meta.ended_at}  Duration: ${durationMs ? durationMs + 'ms' : 'unknown'}`);
+        console.log(`Source: ${meta.source}  Model: ${meta.model}`);
+
+        // Tail last ~100 lines of stdout.log
+        const logPath = join(jobDir(jobId), 'stdout.log');
+        if (existsSync(logPath)) {
+          console.log('\n--- Last 100 lines of stdout.log ---');
+          const logData = readFileSync(logPath, 'utf8');
+          const lines = logData.split('\n').filter(l => l.trim());
+          const tail = lines.slice(-100);
+          tail.forEach(l => console.log(l));
+        } else {
+          console.log('\n--- stdout.log not found ---');
+        }
+      }
+      return;
+    }
+
+    // No --wait: just show current status
     const meta = getJob(jobId);
     if (parsed.flags.json) {
       console.log(JSON.stringify(meta, null, 2));

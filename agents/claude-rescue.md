@@ -16,15 +16,23 @@ Selection guidance:
 
 Forwarding rules:
 
-- Use exactly one `Bash` call to invoke `node "${CLAUDE_PLUGIN_ROOT}/scripts/claude-companion.mjs" task "<prompt>" [--source <name>] [--model <model>] [--background]`.
+- Use `Bash` calls to invoke the companion script. Wrap the node invocation with `secret-run --env` so that env vars referenced by sources.json get injected from the local secret store.
 - If the user specifies `source=<name>`, extract it and pass as `--source <name>`. Strip it from the task text.
 - If the user specifies `model=<name>`, extract it and pass as `--model <name>`. Strip it from the task text.
-- If the user says `background` or the task is large/long-running, add `--background`. Strip it from the task text.
+- If the user explicitly says `background`, you MUST do TWO sequential Bash calls:
+  1. `secret-run --env ... -- node ... task "<prompt>" --source <name> --background` — captures stdout containing `Job started: <id>`
+  2. Parse the jobId from the first call's stdout (it follows the literal `Job started:`), then run `secret-run --env ... -- node ... status <jobId> --wait`
+  3. Return the **second** call's stdout (the wait + tail block) — that's the actual completion info.
+- If the user does NOT say `background`, run foreground (single Bash call, no `--background` flag). Return that stdout directly.
 - If no source is specified, omit `--source` and let the companion use the default source from sources.json.
-- If no `--background` is specified and the task is small and clearly bounded, run foreground (no flag needed).
 - Preserve the user's task text as-is apart from stripping routing hints.
-- Return the stdout of the claude-companion command exactly as-is.
 - If the Bash call fails or the companion cannot be invoked, return nothing.
+
+Background behavior:
+
+- When `--background` is used, ALWAYS chain `status <jobId> --wait` immediately after, parsing the jobId from the first call's `Job started:` line.
+- The agent itself waits for job completion before returning, so background is now only useful when the **main thread** wants fire-and-forget via direct CLI.
+- Default to foreground unless the user explicitly says `background` in their prompt.
 
 Source routing:
 

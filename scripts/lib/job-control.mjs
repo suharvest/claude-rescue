@@ -6,6 +6,9 @@ import { newJobId, ensureJobDir, jobDir, readJobMeta, writeJobMeta, listRunningJ
 import { resolveSource, resolveEnv, assertDepthOk, currentDepth } from './sources.mjs';
 import { trackJob } from './tracked-jobs.mjs';
 
+// Default timeout for waitForJob (30 minutes)
+export const DEFAULT_WAIT_TIMEOUT_MS = 30 * 60 * 1000;
+
 export function getJob(jobId) {
   validateJobId(jobId);
   return readJobMeta(jobId);
@@ -59,6 +62,24 @@ export function cancelJob(jobId) {
   }
   // Timeout - return whatever we have
   return readJobMeta(jobId) || meta;
+}
+
+// Wait for a job to reach a terminal state (done/failed/cancelled/orphaned).
+// timeoutMs = 0 means wait forever.
+export async function waitForJob(jobId, { pollIntervalMs = 1000, timeoutMs = 0 } = {}) {
+  validateJobId(jobId);
+  const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : Infinity;
+  while (true) {
+    const meta = readJobMeta(jobId);
+    if (!meta) throw new Error(`Job not found: ${jobId}`);
+    if (meta.status !== 'running' && meta.status !== 'cancelling') {
+      return meta; // terminal: done | failed | cancelled | orphaned
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(`Wait timeout (${timeoutMs}ms) for job ${jobId}; current status: ${meta.status}`);
+    }
+    await new Promise(r => setTimeout(r, pollIntervalMs));
+  }
 }
 
 // Double-fork pattern: parent (this process) spawns a task-worker that spawns claude.
