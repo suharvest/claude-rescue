@@ -1,14 +1,16 @@
 #!/usr/bin/env node
 // claude-companion.mjs — CLI entry point for claude-rescue plugin
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync, writeFileSync, openSync, closeSync, createWriteStream } from 'fs';
 import { join } from 'path';
+import { PassThrough } from 'stream';
 import { fileURLToPath } from 'url';
 import { spawnClaude } from './lib/claude.mjs';
-import { startJob, getJob, listJobs, cancelJob, runTaskWorker, waitForJob, DEFAULT_WAIT_TIMEOUT_MS } from './lib/job-control.mjs';
-import { loadSources } from './lib/sources.mjs';
-import { jobDir, getConfig, setConfig, validateJobId } from './lib/state.mjs';
+import { startJob, getJob, listJobs, cancelJob, runTaskWorker, waitForJob, DEFAULT_WAIT_TIMEOUT_MS, listRunningJobs } from './lib/job-control.mjs';
+import { loadSources, resolveSource } from './lib/sources.mjs';
+import { jobDir, getConfig, setConfig, validateJobId, newJobId, ensureJobDir, writeJobMeta } from './lib/state.mjs';
 import { SESSION_ID_ENV } from './lib/tracked-jobs.mjs';
 import { createRenderer } from './lib/render.mjs';
+import { parseStdoutLiveness } from './lib/log-parser.mjs';
 
 function parseArgs(argv) {
   const args = argv.slice(2);
@@ -21,6 +23,9 @@ function parseArgs(argv) {
     else if (a === '--raw') { result.flags.raw = true; }
     else if (a === '--json') { result.flags.json = true; }
     else if (a === '--wait') { result.flags.wait = true; }
+    else if (a === '--liveness') { result.flags.liveness = true; }
+    else if (a === '--running') { result.flags.running = true; }
+    else if (a === '--force') { result.flags.force = true; }
     else if (a === '--source' && args[i + 1]) { result.flags.source = args[++i]; }
     else if (a === '--model' && args[i + 1]) { result.flags.model = args[++i]; }
     else if (a === '--cwd' && args[i + 1]) { result.flags.cwd = args[++i]; }
@@ -46,6 +51,51 @@ function printTable(rows, cols) {
   rows.forEach(r => console.log(fmt(r)));
 }
 
+// Gap 3 — Duplicate dispatch guard
+const SIMILARITY_THRESHOLD = 0.85;
+
+function computeJaccard(a, b) {
+  const norm = s => s.replace(/\s+/g, ' ').trim().toLowerCase();
+  const shingles = s => {
+    const out = new Set();
+    s = norm(s);
+    for (let i = 0; i <= s.length - 3; i++) out.add(s.slice(i, i + 3));
+    return out;
+  };
+  const A = shingles(a);
+  const B = shingles(b);
+  const inter = [...A].filter(x => B.has(x)).length;
+  const uni = new Set([...A, ...B]).size;
+  return uni ? inter / uni : 0;
+}
+
+function findSimilarRunningJob(cwd, prompt) {
+  const running = listRunningJobs();
+  for (const job of running) {
+    const jobId = job.id || job.jobId;
+    const jobCwd = job.cwd;
+    // cwd must strictly match
+    if (jobCwd !== cwd) continue;
+    // Read prompt.txt
+    const promptPath = join(jobDir(jobId), 'prompt.txt');
+    if (!existsSync(promptPath)) continue;
+    let existingPrompt;
+    try {
+      existingPrompt = readFileSync(promptPath, 'utf8');
+    } catch {
+      continue;
+    }
+    const similarity = computeJaccard(prompt, existingPrompt);
+    if (similarity >= SIMILARITY_THRESHOLD) {
+      const age_seconds = job.started_at
+        ? Math.floor((Date.now() - new Date(job.started_at)) / 1000)
+        : null;
+      return { jobId, age_seconds, similarity };
+    }
+  }
+  return null;
+}
+
 async function cmdListSources() {
   const config = loadSources();
   const rows = Object.entries(config.sources).map(([name, s]) => {
@@ -59,7 +109,7 @@ async function cmdListSources() {
 
 async function cmdTask(parsed) {
   const prompt = parsed.positional[0];
-  if (!prompt) { console.error('Usage: task "<prompt>" [--source <name>] [--model <model>] [--cwd <dir>] [--background] [--raw]'); process.exit(1); }
+  if (!prompt) { console.error('Usage: task "<prompt>" [--source <name>] [--model <model>] [--cwd <dir>] [--background] [--raw] [--force]'); process.exit(1); }
 
   // Read CLAUDE_RESCUE_SESSION_ID from environment if set (propagated via CLAUDE_ENV_FILE by session-lifecycle-hook)
   const sessionId = process.env[SESSION_ID_ENV] || null;
@@ -73,6 +123,19 @@ async function cmdTask(parsed) {
     sessionId, // Pass to startJob if provided
   };
 
+  // Gap 3: duplicate dispatch guard
+  if (!parsed.flags.force) {
+    const currentCwd = parsed.flags.cwd || process.cwd();
+    const similar = findSimilarRunningJob(currentCwd, prompt);
+    if (similar) {
+      process.stderr.write(
+        `Refusing to launch: similar job already running (jobId=${similar.jobId}, age=${similar.age_seconds}s, similarity=${similar.similarity.toFixed(2)}).\n` +
+        `Re-run with --force to launch anyway, or attach with: rescue-status ${similar.jobId}\n`
+      );
+      process.exit(2);
+    }
+  }
+
   if (parsed.flags.background) {
     const jobId = await startJob(opts);
     console.log(`[claude-rescue] Job started: ${jobId}`);
@@ -82,6 +145,36 @@ async function cmdTask(parsed) {
   }
 
   // Foreground: stream through renderer (unless --raw)
+  // === Gap 2: register a real foreground job dir ===
+  const fgJobId = newJobId();
+  const fgDir = ensureJobDir(fgJobId);
+
+  writeFileSync(join(fgDir, 'prompt.txt'), prompt);
+
+  const fgSource = resolveSource(parsed.flags.source);
+  const fgMeta = {
+    jobId: fgJobId,
+    source: fgSource.name,
+    model: parsed.flags.model || fgSource.model,
+    depth: 1,
+    cwd: opts.cwd || process.cwd(),
+    prompt_preview: prompt.slice(0, 120),
+    resume: opts.resume || null,
+    started_at: new Date().toISOString(),
+    pid: process.pid,
+    status: 'running',
+    exit_code: null,
+    ended_at: null,
+    session_id: opts.sessionId || null,
+    mode: 'foreground',
+  };
+  writeJobMeta(fgJobId, fgMeta);
+
+  process.stderr.write(`Job started: ${fgJobId}\n`);
+
+  const fgStdoutFd = openSync(join(fgDir, 'stdout.log'), 'a');
+  const fgLogStream = createWriteStream(null, { fd: fgStdoutFd, flags: 'a' });
+
   // Note: rendererSessionId is the session ID from the child claude process output,
   // separate from the parent sessionId (CLAUDE_RESCUE_SESSION_ID env var) passed to startJob.
   let rendererSessionId = null;
@@ -89,9 +182,24 @@ async function cmdTask(parsed) {
     raw: parsed.flags.raw,
     onSessionId: (id) => { rendererSessionId = id; },
   });
+
+  const fgTee = new PassThrough();
+  fgTee.pipe(fgLogStream);
+  fgTee.pipe(renderer);
   renderer.pipe(process.stdout);
 
-  const code = await spawnClaude({ ...opts, stdout: renderer, stderr: process.stderr });
+  const code = await spawnClaude({ ...opts, stdout: fgTee, stderr: process.stderr });
+
+  const finalStatus = code === 0 ? 'completed' : 'failed';
+  writeJobMeta(fgJobId, {
+    ...fgMeta,
+    status: finalStatus,
+    pid: null,
+    exit_code: code,
+    ended_at: new Date().toISOString(),
+  });
+
+  try { closeSync(fgStdoutFd); } catch {}
 
   if (rendererSessionId) {
     console.log(`[claude-rescue] session-id: ${rendererSessionId}`);
@@ -110,6 +218,68 @@ async function cmdTaskWorker(parsed) {
 
 async function cmdStatus(parsed) {
   const jobId = parsed.positional[0];
+
+  // Gap 1: --liveness requires jobId
+  if (parsed.flags.liveness) {
+    if (!jobId) {
+      console.error('status --liveness requires a job id');
+      process.exit(1);
+    }
+    validateJobId(jobId);
+    const logPath = join(jobDir(jobId), 'stdout.log');
+    const result = parseStdoutLiveness(logPath);
+    if (parsed.flags.json) {
+      console.log(JSON.stringify(result, null, 2));
+    } else {
+      console.log(`Job:            ${jobId}`);
+      console.log(`Last event:     ${result.last_event_ts || '(none)'}`);
+      console.log(`Age (seconds):  ${result.age_seconds ?? '(unknown)'}`);
+      console.log(`Health:         ${result.health}`);
+      console.log(`Tool use /60s:  ${result.tool_use_last_60s}`);
+    }
+    return;
+  }
+
+  // Gap 4: --running overview (no jobId required)
+  if (parsed.flags.running) {
+    const running = listRunningJobs();
+    // Sort by started_at ascending (oldest first = largest age at top)
+    running.sort((a, b) => {
+      const ta = a.started_at ? new Date(a.started_at).getTime() : 0;
+      const tb = b.started_at ? new Date(b.started_at).getTime() : 0;
+      return ta - tb;
+    });
+    const now = new Date();
+    const enriched = running.map(job => {
+      const jId = job.id || job.jobId;
+      const logPath = join(jobDir(jId), 'stdout.log');
+      const liveness = parseStdoutLiveness(logPath, now);
+      const age_seconds = job.started_at
+        ? Math.floor((now - new Date(job.started_at)) / 1000)
+        : null;
+      return {
+        jobId: jId,
+        age_seconds,
+        last_event_age_seconds: liveness.age_seconds,
+        cwd: job.cwd || '',
+      };
+    });
+    if (parsed.flags.json) {
+      console.log(JSON.stringify(enriched, null, 2));
+    } else {
+      if (!enriched.length) {
+        console.log('No running jobs.');
+        return;
+      }
+      for (const e of enriched) {
+        const ageFmt = e.age_seconds != null ? `${Math.floor(e.age_seconds / 60)}m${e.age_seconds % 60}s` : '?';
+        const lastFmt = e.last_event_age_seconds != null ? `${e.last_event_age_seconds}s` : '?';
+        const cwdTrunc = e.cwd.length > 40 ? '...' + e.cwd.slice(-37) : e.cwd;
+        console.log(`${e.jobId}  age=${ageFmt}  last=${lastFmt}  cwd=${cwdTrunc}`);
+      }
+    }
+    return;
+  }
 
   // --wait requires a jobId
   if (parsed.flags.wait && !jobId) {
