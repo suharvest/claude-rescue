@@ -143,6 +143,7 @@ node scripts/claude-companion.mjs task "<task>" --source deepseek-pro --backgrou
 node scripts/claude-companion.mjs list-sources
 node scripts/claude-companion.mjs status <job-id>
 node scripts/claude-companion.mjs result <job-id>
+node scripts/claude-companion.mjs watch [<job-id>] [--pretty] [--list] [--cwd <dir>]
 ```
 
 ### Nesting
@@ -153,6 +154,42 @@ Nesting is **disabled by default** — a child run cannot dispatch another `clau
 2. The companion runtime's `assertDepthOk()` is a backstop for raw CLI callers that bypass Claude Code.
 
 Operator opt-in: `CLAUDE_RESCUE_ALLOW_NESTING=1` (or raise `CLAUDE_RESCUE_MAX_DEPTH` for finer control). The current depth is exposed to each child via `CLAUDE_RESCUE_DEPTH` and recorded in `jobs/<id>/meta.json` for `--background` runs.
+
+### Observability — where to look
+
+There are **two distinct paths**, and conflating them is the #1 source of "is it still alive?" confusion. Don't poll the wrong one.
+
+| You ran… | Live record lives at | Has `jobs/<id>/meta.json`? |
+| --- | --- | --- |
+| `Agent(subagent_type=claude-rescue, ...)` (foreground, the default) | `~/.claude/projects/<slug>/<sessionId>/subagents/agent-*.jsonl` | **No** |
+| `node claude-companion.mjs task ... --background` | `~/.claude/plugins/data/claude-rescue/jobs/<id>/{stdout.log,meta.json}` | Yes |
+
+`<slug>` is your `cwd` with `/` replaced by `-`. The subagent JSONL is Claude Code's native transcript and is the authoritative live record for the foreground path — there is no companion job entry for it.
+
+**Liveness signals (in order of trustworthiness):**
+
+1. mtime of the active file (subagent JSONL or `stdout.log`) — recent write = alive
+2. `node claude-companion.mjs status <jobId> --liveness` for background jobs (reads `stdout.log` mtime, not pid)
+3. `meta.pid` is the **task-worker** pid, *not* the grandchild `claude --print`. Don't infer aliveness from `kill -0 meta.pid` alone — the worker can be reaped while the detached claude grandchild keeps running.
+
+**One command for both paths — `watch`:**
+
+```bash
+# Tail the freshest subagent transcripts for the current cwd (foreground path)
+node scripts/claude-companion.mjs watch
+
+# Pretty-print events (tool_use / tool_result / text / thinking) instead of raw JSONL
+node scripts/claude-companion.mjs watch --pretty
+
+# Just list available transcripts with age, don't follow
+node scripts/claude-companion.mjs watch --list
+
+# Tail a specific background job's stdout.log
+node scripts/claude-companion.mjs watch <jobId>
+
+# Override which project to watch
+node scripts/claude-companion.mjs watch --cwd /path/to/other/repo --pretty
+```
 
 ## How it works
 
