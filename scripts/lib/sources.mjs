@@ -14,12 +14,13 @@ export function currentDepth() {
 }
 
 export function assertDepthOk() {
+  if (process.env.CLAUDE_RESCUE_ALLOW_NESTING === '1') return;
   const d = currentDepth();
   if (d >= MAX_DEPTH) {
     throw new Error(
-      `claude-rescue nesting depth ${d} has reached the limit of ${MAX_DEPTH}. ` +
-      `Refusing to spawn another level to avoid runaway cost. ` +
-      `Override with CLAUDE_RESCUE_MAX_DEPTH=<n> if you know what you're doing.`,
+      `claude-rescue nesting is disabled (current depth=${d}, limit=${MAX_DEPTH}). ` +
+      `A child run cannot dispatch another claude-rescue. ` +
+      `Operator opt-in: CLAUDE_RESCUE_ALLOW_NESTING=1 (or raise CLAUDE_RESCUE_MAX_DEPTH).`,
     );
   }
 }
