@@ -53,6 +53,18 @@
         ]
       }
     ],
+    "PreToolUse": [
+      {
+        "matcher": "Agent|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/pre-tool-use-hook.mjs\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "Agent|Bash",

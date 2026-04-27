@@ -147,7 +147,12 @@ node scripts/claude-companion.mjs result <job-id>
 
 ### Nesting
 
-You can dispatch **from inside a dispatched run** — e.g. GLM-5 delegates a vision subtask to Qwen3.6-Plus. Depth is capped at **3** by default to prevent runaway cost; override with `CLAUDE_RESCUE_MAX_DEPTH=<n>`. The current depth is exposed to each child via `CLAUDE_RESCUE_DEPTH` and recorded in `jobs/<id>/meta.json`.
+Nesting is **disabled by default** — a child run cannot dispatch another `claude-rescue`. This is enforced at two layers:
+
+1. A `PreToolUse` hook denies `Agent(subagent_type=claude-rescue)` and Bash re-invocations of the companion when `CLAUDE_RESCUE_DEPTH > 0`.
+2. The companion runtime's `assertDepthOk()` is a backstop for raw CLI callers that bypass Claude Code.
+
+Operator opt-in: `CLAUDE_RESCUE_ALLOW_NESTING=1` (or raise `CLAUDE_RESCUE_MAX_DEPTH` for finer control). The current depth is exposed to each child via `CLAUDE_RESCUE_DEPTH` and recorded in `jobs/<id>/meta.json` for `--background` runs.
 
 ## How it works
 
