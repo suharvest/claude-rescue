@@ -135,6 +135,8 @@ From the main Claude Code thread:
 Agent(subagent_type="claude-rescue", prompt="<task> source=<name> [model=<override>] [background]")
 ```
 
+> **When to dispatch vs. use a native subagent.** `claude-rescue` spawns an isolated `claude -p` subprocess on a **different backend** — that crosses a process + HTTP + cache boundary, so it is strictly more expensive than a native `general-purpose` / `Explore` subagent that runs in-process and shares the main thread's prompt cache. Reach for `claude-rescue` only when the task actually needs a non-default backend (vision, deep reasoning, cheap bulk, PAYG fallback, fire-and-forget detach). For generic long-running work — codebase search, file reads, test runs, refactors — the native subagent is faster and cheaper.
+
 Or invoke the companion directly:
 
 ```bash
