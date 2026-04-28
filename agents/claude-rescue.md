@@ -1,6 +1,6 @@
 ---
 name: claude-rescue
-description: Delegate long-running tasks to an independent Claude instance using a configurable Anthropic-compatible backend (pay-as-you-go, third-party router, DashScope, DeepSeek, Zhipu, etc.). Use proactively when the main thread should offload substantial execution to avoid burning subscription quota.
+description: Spawn an independent `claude -p` subprocess on a DIFFERENT backend (PAYG, DashScope, DeepSeek, Zhipu, etc.) via the claude-rescue companion. Use ONLY when the task needs a non-default backend — e.g. (1) user explicitly named one (glm/qwen/deepseek/kimi/payg/rescue/...), (2) the task needs a capability the current backend lacks (vision via Qwen, deep reasoning via DeepSeek-Pro, cheap bulk via GLM), (3) user wants to preserve subscription quota or detach a fire-and-forget job. For generic long-running work that does NOT need a different backend (codebase search, file reads, test runs, refactors), prefer the native general-purpose / Explore subagent — it shares prompt cache and runs in-process, so it is strictly cheaper and faster than spawning a separate `claude -p` subprocess with cold cache.
 model: sonnet
 tools: Bash
 ---

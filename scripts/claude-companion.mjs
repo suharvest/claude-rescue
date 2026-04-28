@@ -11,6 +11,7 @@ import { jobDir, getConfig, setConfig, validateJobId, newJobId, ensureJobDir, wr
 import { SESSION_ID_ENV } from './lib/tracked-jobs.mjs';
 import { createRenderer } from './lib/render.mjs';
 import { parseStdoutLiveness } from './lib/log-parser.mjs';
+import { listSubagentTranscripts, prettyEvent, tailFile, formatAge } from './lib/watch.mjs';
 
 function parseArgs(argv) {
   const args = argv.slice(2);
@@ -37,6 +38,10 @@ function parseArgs(argv) {
     else if (a === '--disable') { result.flags.disable = true; }
     else if (a === '--toggle') { result.flags.toggle = true; }
     else if (a === '--status') { result.flags.status = true; }
+    else if (a === '--pretty') { result.flags.pretty = true; }
+    else if (a === '--list') { result.flags.list = true; }
+    else if (a === '--from-start') { result.flags.fromStart = true; }
+    else if (a === '--n' && args[i + 1]) { result.flags.n = parseInt(args[++i], 10); }
     else if (!a.startsWith('--')) { result.positional.push(a); }
   }
   return result;
@@ -393,6 +398,73 @@ async function cmdSetup(parsed) {
   }
 }
 
+async function cmdWatch(parsed) {
+  const cwd = parsed.flags.cwd || process.cwd();
+  const positional = parsed.positional[0];
+
+  // Mode 1: positional looks like a companion job id → tail jobs/<id>/stdout.log
+  if (positional && /^[a-z0-9]{6,}$/i.test(positional)) {
+    try {
+      validateJobId(positional);
+      const logPath = join(jobDir(positional), 'stdout.log');
+      console.log(`[claude-rescue] watching background job ${positional}`);
+      console.log(`  ${logPath}`);
+      tailFile(logPath, (line) => process.stdout.write(line + '\n'), { fromStart: parsed.flags.fromStart });
+      // keep alive
+      await new Promise(() => {});
+      return;
+    } catch {
+      // fall through to subagent-transcript mode
+    }
+  }
+
+  const limit = parsed.flags.n || 3;
+  const transcripts = listSubagentTranscripts(cwd, { limit });
+  if (!transcripts.length) {
+    console.error(`[claude-rescue] no subagent transcripts found for cwd=${cwd}`);
+    console.error(`  looked under ~/.claude/projects/${cwd.replace(/\//g, '-')}/<sessionId>/subagents/`);
+    process.exit(1);
+  }
+
+  if (parsed.flags.list) {
+    if (parsed.flags.json) {
+      console.log(JSON.stringify(transcripts.map(t => ({
+        agentId: t.agentId,
+        sessionId: t.sessionId,
+        path: t.path,
+        size: t.size,
+        mtime: new Date(t.mtime).toISOString(),
+        age: formatAge(Date.now() - t.mtime),
+      })), null, 2));
+    } else {
+      const now = Date.now();
+      for (const t of transcripts) {
+        console.log(`${t.agentId}  age=${formatAge(now - t.mtime)}  size=${t.size}  session=${t.sessionId.slice(0, 8)}`);
+      }
+    }
+    return;
+  }
+
+  console.log(`[claude-rescue] watching ${transcripts.length} subagent transcript(s) for cwd=${cwd}`);
+  for (const t of transcripts) {
+    console.log(`  [${t.agentId}] age=${formatAge(Date.now() - t.mtime)}  ${t.path}`);
+  }
+  console.log('');
+
+  for (const t of transcripts) {
+    tailFile(t.path, (line, parsed_) => {
+      if (parsed.flags.pretty) {
+        const out = prettyEvent(parsed_, { agentId: t.agentId.slice(0, 6) });
+        if (out) process.stdout.write(out + '\n');
+      } else {
+        process.stdout.write(`[${t.agentId.slice(0, 6)}] ${line}\n`);
+      }
+    }, { fromStart: parsed.flags.fromStart });
+  }
+  // keep alive
+  await new Promise(() => {});
+}
+
 async function main() {
   const parsed = parseArgs(process.argv);
   try {
@@ -402,11 +474,12 @@ async function main() {
       case 'status':       await cmdStatus(parsed); break;
       case 'result':       await cmdResult(parsed); break;
       case 'cancel':       await cmdCancel(parsed); break;
+      case 'watch':        await cmdWatch(parsed); break;
       case 'setup':        await cmdSetup(parsed); break;
       case 'list-sources': await cmdListSources(parsed); break;
       default:
         console.error(`Unknown command: ${parsed.cmd}`);
-        console.error('Commands: task, task-worker, status, result, cancel, setup, list-sources');
+        console.error('Commands: task, task-worker, status, result, cancel, watch, setup, list-sources');
         process.exit(1);
     }
   } catch (err) {
