@@ -7,7 +7,7 @@ allowed-tools: Bash(node:*)
 Run:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/claude-companion.mjs setup $ARGUMENTS"
+node /Users/harvest/project/claude-rescue/scripts/claude-companion.mjs setup $ARGUMENTS
 ```
 
 The setup command manages the stop-review-gate configuration:
