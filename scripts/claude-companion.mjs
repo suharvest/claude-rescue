@@ -7,7 +7,7 @@ import { fileURLToPath } from 'url';
 import { spawnClaude } from './lib/claude.mjs';
 import { startJob, getJob, listJobs, cancelJob, runTaskWorker, waitForJob, DEFAULT_WAIT_TIMEOUT_MS, listRunningJobs } from './lib/job-control.mjs';
 import { loadSources, resolveSource } from './lib/sources.mjs';
-import { jobDir, getConfig, setConfig, validateJobId, newJobId, ensureJobDir, writeJobMeta } from './lib/state.mjs';
+import { jobDir, getConfig, setConfig, validateJobId, newJobId, ensureJobDir, writeJobMeta, reapOrphanedJobs } from './lib/state.mjs';
 import { SESSION_ID_ENV } from './lib/tracked-jobs.mjs';
 import { createRenderer } from './lib/render.mjs';
 import { parseStdoutLiveness } from './lib/log-parser.mjs';
@@ -75,6 +75,9 @@ function computeJaccard(a, b) {
 }
 
 function findSimilarRunningJob(cwd, prompt) {
+  // Reap dead-pid orphans first so a stale "running" record from a crashed
+  // launch doesn't false-positive the similarity guard.
+  reapOrphanedJobs();
   const running = listRunningJobs();
   for (const job of running) {
     const jobId = job.id || job.jobId;
@@ -127,6 +130,33 @@ async function cmdTask(parsed) {
     resume: parsed.flags.resume,
     sessionId, // Pass to startJob if provided
   };
+
+  // Pre-flight: validate source + env vars BEFORE any state is registered.
+  // Otherwise a missing-env failure leaves a registered job that the duplicate
+  // guard will use to block legitimate retries.
+  try {
+    const src = resolveSource(parsed.flags.source);
+    const missing = [];
+    for (const v of Object.values(src.env || {})) {
+      if (typeof v !== 'string') continue;
+      for (const m of v.matchAll(/\$\{([A-Z_][A-Z0-9_]*)\}/gi)) {
+        const name = m[1];
+        if (!process.env[name]) missing.push(name);
+      }
+    }
+    if (missing.length) {
+      const keys = [...new Set(missing)].join(' ');
+      process.stderr.write(
+        `[claude-rescue] Missing env var(s): ${keys}\n` +
+        `Source "${src.name}" requires these. Invoke via secret-run with --env mode:\n` +
+        `  secret-run --env ${keys} -- node ${process.argv[1]} task "<prompt>" --source ${src.name} [--background]\n`
+      );
+      process.exit(1);
+    }
+  } catch (e) {
+    process.stderr.write(`[claude-rescue] ${e.message}\n`);
+    process.exit(1);
+  }
 
   // Gap 3: duplicate dispatch guard
   if (!parsed.flags.force) {
