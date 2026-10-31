@@ -31,19 +31,19 @@ Use exactly one of these templates based on the source the user picked (or defau
 
 ```
 # Default (aliyun-coding-glm) — used when user did not specify source=
-secret-run --env Aliyun_CodingPlan -- node "${CLAUDE_PLUGIN_ROOT}/scripts/claude-companion.mjs" task "<PROMPT>"
+secret-run --env Aliyun_CodingPlan -- node /Users/harvest/project/claude-rescue/scripts/claude-companion.mjs task "<PROMPT>"
 
 # source=aliyun-coding-glm
-secret-run --env Aliyun_CodingPlan -- node "${CLAUDE_PLUGIN_ROOT}/scripts/claude-companion.mjs" task "<PROMPT>" --source aliyun-coding-glm
+secret-run --env Aliyun_CodingPlan -- node /Users/harvest/project/claude-rescue/scripts/claude-companion.mjs task "<PROMPT>" --source aliyun-coding-glm
 
 # source=aliyun-coding-qwen (vision)
-secret-run --env Aliyun_CodingPlan -- node "${CLAUDE_PLUGIN_ROOT}/scripts/claude-companion.mjs" task "<PROMPT>" --source aliyun-coding-qwen
+secret-run --env Aliyun_CodingPlan -- node /Users/harvest/project/claude-rescue/scripts/claude-companion.mjs task "<PROMPT>" --source aliyun-coding-qwen
 
 # source=deepseek-pro
-secret-run --env deepseek_API -- node "${CLAUDE_PLUGIN_ROOT}/scripts/claude-companion.mjs" task "<PROMPT>" --source deepseek-pro
+secret-run --env deepseek_API -- node /Users/harvest/project/claude-rescue/scripts/claude-companion.mjs task "<PROMPT>" --source deepseek-pro
 
 # source=deepseek-flash
-secret-run --env deepseek_API -- node "${CLAUDE_PLUGIN_ROOT}/scripts/claude-companion.mjs" task "<PROMPT>" --source deepseek-flash
+secret-run --env deepseek_API -- node /Users/harvest/project/claude-rescue/scripts/claude-companion.mjs task "<PROMPT>" --source deepseek-flash
 ```
 
 Hard rules:
@@ -63,8 +63,8 @@ This is the contract: foreground = block-and-return-result; background = return-
 
 ## Source routing
 
-- Sources defined in `${CLAUDE_PLUGIN_ROOT}/scripts/sources.json`.
-- Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/claude-companion.mjs" list-sources` to see current list.
+- Sources defined in `/Users/harvest/project/claude-rescue/scripts/sources.json`.
+- Run `node /Users/harvest/project/claude-rescue/scripts/claude-companion.mjs list-sources` to see current list.
 - Secrets resolved at runtime from `process.env` via `${VAR_NAME}` placeholders.
 - Do NOT use `${CLAUDE_PLUGIN_ROOT}` in Bash — that variable is not exported in the subagent shell and will expand to an empty string. Use the absolute path above.
 
